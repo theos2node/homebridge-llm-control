@@ -36,6 +36,9 @@
     "type": "git",
     "url": "git+https://github.com/theos2node/homebridge-llm-control.git"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": "^18.15.0 || ^20.7.0 || ^22 || ^24",
     "homebridge": ">=1.8.0"
