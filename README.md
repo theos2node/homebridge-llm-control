@@ -12,6 +12,7 @@ LLM-powered operations plugin for Homebridge with:
 - Daily health monitoring
 - Watchdog checks for critical signals
 - Guardrailed self-healing commands (allowlist + cooldown + daily quota)
+- Chat-managed runtime skills (propose/approve workflow) for safe command expansion
 - Config-based and chat-created scheduled automations
 
 ## Homebridge Store readiness
@@ -163,8 +164,10 @@ Full example:
 - `/watchdog`
 - `/ask <question>`
 - `/config` (show/set/get/reset runtime settings)
-- `/commands` (list self-healing command IDs)
-- `/run <commandId>` (run an allowed self-healing command)
+- `/skills` (list skills)
+- `/skill` (manage runtime skills)
+- `/commands` (alias for skills list)
+- `/run <commandId>` (run an allowed skill/command)
 - `/automation list`
 - `/automation add <name> | <cron> | <prompt>`
 - `/automation remove <id>`
@@ -201,10 +204,24 @@ Quick start:
 
 Tip: once your LLM provider is configured, you can also just type: "turn off the lights in 30 minutes".
 
+## Skills (runtime shell commands)
+
+You can add new safe commands from chat without editing `config.json`:
+
+- Propose: `/skill propose <label> | <command> | <cooldownMinutes?>`
+- Review: `/skill pending`
+- Approve: `/skill approve <proposalId> yes`
+- Run: `/run <skillId>`
+
+Notes:
+- Skills execute only when `selfHealing.enabled` is true.
+- This is still guardrailed: allowlist, cooldowns, and daily quota apply.
+
 ## Safety model
 
 - LLM cannot execute arbitrary shell commands.
-- LLM can only recommend command IDs from your `selfHealing.commands` allowlist.
+- LLM can only run skills/command IDs from your allowlist (config commands + approved runtime skills).
+- LLM may propose a new skill, but it is always **pending** until you explicitly approve it with `/skill approve ... yes`.
 - Cooldown and daily action quotas are enforced.
 
 ## Local development

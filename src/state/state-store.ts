@@ -11,6 +11,20 @@ type RuntimeAutomation = {
   enabled: boolean;
 };
 
+export type RuntimeSkill = {
+  id: string;
+  label: string;
+  command: string;
+  cooldownMinutes: number;
+};
+
+export type PendingSkillProposal = {
+  id: string;
+  createdAt: string;
+  reason?: string;
+  skill: RuntimeSkill;
+};
+
 export type VirtualDeviceType = 'switch' | 'light';
 
 export type VirtualDevice = {
@@ -30,6 +44,8 @@ export type PersistentState = {
   discordWebhookHelloSent?: boolean;
   lastStartupAt?: string;
   runtimeConfig: Record<string, unknown>;
+  runtimeSkills: RuntimeSkill[];
+  pendingSkillProposals: PendingSkillProposal[];
   virtualDevices: VirtualDevice[];
   oneShotJobs: OneShotJob[];
   runtimeAutomations: RuntimeAutomation[];
@@ -42,6 +58,8 @@ export type PersistentState = {
 
 const defaultState = (): PersistentState => ({
   runtimeConfig: {},
+  runtimeSkills: [],
+  pendingSkillProposals: [],
   virtualDevices: [],
   oneShotJobs: [],
   runtimeAutomations: [],
@@ -145,6 +163,67 @@ const sanitizeVirtualDevices = (value: unknown): VirtualDevice[] => {
   return result;
 };
 
+const sanitizeRuntimeSkills = (value: unknown): RuntimeSkill[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const result: RuntimeSkill[] = [];
+  for (const item of value) {
+    if (!isPlainObject(item)) {
+      continue;
+    }
+
+    const id = typeof item.id === 'string' ? item.id : '';
+    const label = typeof item.label === 'string' ? item.label : '';
+    const command = typeof item.command === 'string' ? item.command : '';
+    const cooldownMinutesRaw = typeof item.cooldownMinutes === 'number' ? item.cooldownMinutes : undefined;
+    const cooldownMinutes =
+      typeof cooldownMinutesRaw === 'number' && Number.isFinite(cooldownMinutesRaw)
+        ? Math.max(0, Math.min(1440, Math.round(cooldownMinutesRaw)))
+        : 60;
+
+    if (!id || !label || !command) {
+      continue;
+    }
+
+    result.push({ id, label, command, cooldownMinutes });
+  }
+
+  return result;
+};
+
+const sanitizePendingSkillProposals = (value: unknown): PendingSkillProposal[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const result: PendingSkillProposal[] = [];
+  for (const item of value) {
+    if (!isPlainObject(item)) {
+      continue;
+    }
+
+    const id = typeof item.id === 'string' ? item.id : '';
+    const createdAt = typeof item.createdAt === 'string' ? item.createdAt : '';
+    const reason = typeof item.reason === 'string' ? item.reason : undefined;
+    const skillRaw = isPlainObject(item.skill) ? item.skill : undefined;
+
+    if (!id || !createdAt || !skillRaw) {
+      continue;
+    }
+
+    const skill = sanitizeRuntimeSkills([skillRaw])[0];
+    if (!skill) {
+      continue;
+    }
+
+    result.push({ id, createdAt, reason, skill });
+  }
+
+  return result;
+};
+
 export class StateStore {
   private readonly stateFilePath: string;
 
@@ -167,6 +246,8 @@ export class StateStore {
           typeof parsed.discordWebhookHelloSent === 'boolean' ? parsed.discordWebhookHelloSent : false,
         lastStartupAt: typeof parsed.lastStartupAt === 'string' ? parsed.lastStartupAt : undefined,
         runtimeConfig: isPlainObject(parsed.runtimeConfig) ? parsed.runtimeConfig : {},
+        runtimeSkills: sanitizeRuntimeSkills(parsed.runtimeSkills),
+        pendingSkillProposals: sanitizePendingSkillProposals(parsed.pendingSkillProposals),
         virtualDevices: sanitizeVirtualDevices(parsed.virtualDevices),
         oneShotJobs: sanitizeOneShotJobs(parsed.oneShotJobs),
         runtimeAutomations: Array.isArray(parsed.runtimeAutomations) ? parsed.runtimeAutomations : [],

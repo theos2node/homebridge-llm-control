@@ -17,7 +17,14 @@ import {
   normalizeConfig,
 } from './settings';
 import { OpenAIClient } from './llm/openai-client';
-import { PersistentState, StateStore, VirtualDevice, VirtualDeviceType } from './state/state-store';
+import {
+  PendingSkillProposal,
+  PersistentState,
+  RuntimeSkill,
+  StateStore,
+  VirtualDevice,
+  VirtualDeviceType,
+} from './state/state-store';
 import { HealthService } from './monitoring/health-service';
 import { TelegramService } from './messaging/telegram-service';
 import { NtfyService } from './messaging/ntfy-service';
@@ -57,6 +64,7 @@ const ALLOWED_RUNTIME_CONFIG_PATHS = new Set<string>([
   'provider.maxTokens',
   'provider.requestTimeoutMs',
   'messaging.enabled',
+  'messaging.botToken',
   'messaging.pairingMode',
   'messaging.pairingSecret',
   'messaging.onboardingCode',
@@ -153,6 +161,14 @@ const formatDelayShort = (seconds: number): string => {
   return `${Math.round(seconds / 86400)}d`;
 };
 
+type ExecutableSkill = {
+  id: string;
+  label: string;
+  command: string;
+  cooldownMinutes: number;
+  source: 'config' | 'runtime';
+};
+
 export class LLMControlPlatform implements DynamicPlatformPlugin {
   private readonly baseConfig?: LLMControlNormalizedConfig;
   private config?: LLMControlNormalizedConfig;
@@ -176,11 +192,16 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
 
   private ready = false;
   private state: PersistentState = {
+    runtimeSkills: [],
+    pendingSkillProposals: [],
     oneShotJobs: [],
     runtimeConfig: {},
     virtualDevices: [],
     runtimeAutomations: [],
     commandCooldowns: {},
+    setupHelloSent: false,
+    ntfyHelloSent: false,
+    discordWebhookHelloSent: false,
     actionQuota: {
       date: new Date().toISOString().slice(0, 10),
       count: 0,
@@ -678,6 +699,41 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     }
   }
 
+  private listExecutableSkills(): ExecutableSkill[] {
+    const result: ExecutableSkill[] = [];
+    const seen = new Set<string>();
+
+    for (const cmd of this.config?.selfHealing.commands ?? []) {
+      if (seen.has(cmd.id)) {
+        continue;
+      }
+      seen.add(cmd.id);
+      result.push({
+        id: cmd.id,
+        label: cmd.label,
+        command: cmd.command,
+        cooldownMinutes: cmd.cooldownMinutes,
+        source: 'config',
+      });
+    }
+
+    for (const skill of this.state.runtimeSkills ?? []) {
+      if (seen.has(skill.id)) {
+        continue;
+      }
+      seen.add(skill.id);
+      result.push({
+        id: skill.id,
+        label: skill.label,
+        command: skill.command,
+        cooldownMinutes: skill.cooldownMinutes,
+        source: 'runtime',
+      });
+    }
+
+    return result;
+  }
+
   private async runHealthAnalysis(
     reason: string,
     options?: { notifyMode?: 'auto' | 'always' | 'never' },
@@ -695,7 +751,7 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       this.lastWatchdogTriggeredAt,
     );
 
-    const allowedCommands = this.config.selfHealing.commands.map((item) => ({
+    const allowedCommands = this.listExecutableSkills().map((item) => ({
       id: item.id,
       label: item.label,
     }));
@@ -763,7 +819,7 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     }
 
     const results: string[] = [];
-    const commandMap = new Map(this.config.selfHealing.commands.map((item) => [item.id, item]));
+    const commandMap = new Map(this.listExecutableSkills().map((item) => [item.id, item]));
 
     for (const action of actions) {
       if (this.state.actionQuota.count >= this.config.selfHealing.maxActionsPerDay) {
@@ -1535,12 +1591,13 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       return 'Config is not initialized yet.';
     }
 
-    if (this.config.selfHealing.commands.length === 0) {
-      return 'No self-healing commands configured in plugin settings.';
+    const skills = this.listExecutableSkills();
+    if (skills.length === 0) {
+      return 'No self-healing commands or runtime skills configured yet.';
     }
 
-    const lines = this.config.selfHealing.commands.map((cmd) => `${cmd.id} | ${cmd.label} | cooldown ${cmd.cooldownMinutes}m`);
-    return `Self-healing commands:\n${lines.join('\n')}`;
+    const lines = skills.map((cmd) => `${cmd.id} | ${cmd.label} | cooldown ${cmd.cooldownMinutes}m | ${cmd.source}`);
+    return `Skills:\n${lines.join('\n')}`;
   }
 
   private async assistantChat(text: string): Promise<string> {
@@ -1577,15 +1634,24 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
         action: job.action,
       }));
 
+    const skills = this.listExecutableSkills().map((s) => ({
+      id: s.id,
+      label: s.label,
+      cooldownMinutes: s.cooldownMinutes,
+      source: s.source,
+    }));
+
     const systemPrompt = [
       'You are a Homebridge assistant.',
       'Return ONLY valid JSON with this schema:',
-      '{"reply":"string","actions":[{"type":"refresh_hb"},{"type":"set_hb_entity","entityId":"string","on":boolean,"brightness":number?},{"type":"set_hb_group","group":"all_lights|all_switches|all_outlets|all","on":boolean},{"type":"schedule_set_hb_entity","entityId":"string","delaySeconds":number,"on":boolean,"brightness":number?},{"type":"schedule_set_hb_group","group":"all_lights|all_switches|all_outlets|all","delaySeconds":number,"on":boolean},{"type":"schedule_restart_homebridge","delaySeconds":number,"reason":"string"},{"type":"set_config","path":"string","value":any},{"type":"run_health"},{"type":"run_watchdog"}]}',
+      '{"reply":"string","actions":[{"type":"refresh_hb"},{"type":"set_hb_entity","entityId":"string","on":boolean,"brightness":number?},{"type":"set_hb_group","group":"all_lights|all_switches|all_outlets|all","on":boolean},{"type":"schedule_set_hb_entity","entityId":"string","delaySeconds":number,"on":boolean,"brightness":number?},{"type":"schedule_set_hb_group","group":"all_lights|all_switches|all_outlets|all","delaySeconds":number,"on":boolean},{"type":"schedule_restart_homebridge","delaySeconds":number,"reason":"string"},{"type":"set_config","path":"string","value":any},{"type":"run_skill","skillId":"string","reason":"string"},{"type":"propose_skill","label":"string","command":"string","cooldownMinutes":number?,"reason":"string"},{"type":"run_health"},{"type":"run_watchdog"}]}',
       'Rules:',
       '- Only use entityId values from entities. Never invent ids.',
+      '- Only use skillId values from skills. Never invent ids.',
       '- If multiple devices could match, ask a clarifying question and do not take action.',
       '- For restarts, prefer scheduling a restart a few seconds in the future (delaySeconds >= 3).',
       '- You can directly control existing Homebridge accessories; do not mention HomeKit automations or virtual devices.',
+      '- propose_skill must NOT execute anything. It only creates a pending proposal that requires explicit user approval.',
       '- Never output secrets.',
     ].join(' ');
 
@@ -1600,6 +1666,7 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
         },
         entities,
         scheduledJobs,
+        skills,
         allowedConfigPaths: Array.from(ALLOWED_RUNTIME_CONFIG_PATHS).sort(),
       },
       null,
@@ -1753,6 +1820,53 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
           actionResults.push(`Updated ${pathStr}.`);
         } catch (error) {
           actionResults.push(`Failed to update ${pathStr}: ${(error as Error).message}`);
+        }
+        continue;
+      }
+
+      if (action.type === 'run_skill') {
+        const skillId = typeof action.skillId === 'string' ? action.skillId : '';
+        const reason = typeof action.reason === 'string' ? action.reason : 'assistant-run-skill';
+        if (!skillId) {
+          continue;
+        }
+
+        if (!this.config?.selfHealing.enabled) {
+          actionResults.push('Self-healing is disabled. Enable it with: /config set selfHealing.enabled true');
+          continue;
+        }
+
+        const results = await this.executeHealingActions([{ commandId: skillId, reason }]);
+        actionResults.push(results.length > 0 ? results.join('\n') : `No action executed for skill ${skillId}.`);
+        continue;
+      }
+
+      if (action.type === 'propose_skill') {
+        const label = typeof action.label === 'string' ? action.label : '';
+        const command = typeof action.command === 'string' ? action.command : '';
+        const cooldownMinutes = typeof action.cooldownMinutes === 'number' ? action.cooldownMinutes : undefined;
+        const reason = typeof action.reason === 'string' ? action.reason : undefined;
+        if (!label || !command) {
+          continue;
+        }
+
+        try {
+          const proposal = await this.createPendingSkillProposal({
+            label,
+            command,
+            cooldownMinutes,
+            reason: reason ? `assistant:${reason}` : 'assistant-propose',
+          });
+
+          actionResults.push(
+            [
+              `Proposed skill: ${proposal.skill.id} | ${proposal.skill.label} | cooldown ${proposal.skill.cooldownMinutes}m`,
+              `Approve: /skill approve ${proposal.id} yes`,
+              `Reject: /skill reject ${proposal.id}`,
+            ].join('\n'),
+          );
+        } catch (error) {
+          actionResults.push(`Failed to propose skill: ${(error as Error).message}`);
         }
         continue;
       }
@@ -1941,6 +2055,18 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
 
     if (trimmed === '/commands' || trimmed === '/commands list') {
       await send(this.commandsListText());
+      return;
+    }
+
+    if (trimmed === '/skills') {
+      const response = await this.handleSkillCommand('/skill list');
+      await send(response);
+      return;
+    }
+
+    if (trimmed.startsWith('/skill')) {
+      const response = await this.handleSkillCommand(trimmed);
+      await send(response);
       return;
     }
 
@@ -2256,6 +2382,202 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     return ['Job commands:', '/jobs list', '/jobs cancel <jobId>', '/jobs clear'].join('\n');
   }
 
+  private generateRuntimeSkillId(): string {
+    // Short, chat-friendly identifier.
+    const raw = randomUUID().replace(/-/g, '').slice(0, 8);
+    return `skill_${raw}`;
+  }
+
+  private async createPendingSkillProposal(input: {
+    label: string;
+    command: string;
+    cooldownMinutes?: number;
+    reason?: string;
+  }): Promise<PendingSkillProposal> {
+    const label = input.label.trim();
+    const command = input.command.trim();
+    if (!label) {
+      throw new Error('Skill label cannot be empty.');
+    }
+    if (!command) {
+      throw new Error('Skill command cannot be empty.');
+    }
+    if (command.includes('\n') || command.includes('\r')) {
+      throw new Error('Skill command must be a single line.');
+    }
+
+    const cooldownMinutesRaw = input.cooldownMinutes;
+    const cooldownMinutes =
+      typeof cooldownMinutesRaw === 'number' && Number.isFinite(cooldownMinutesRaw)
+        ? Math.max(0, Math.min(1440, Math.round(cooldownMinutesRaw)))
+        : 60;
+
+    // Avoid accidental collisions with existing skill IDs.
+    const existing = new Set(this.listExecutableSkills().map((s) => s.id));
+    let skillId = this.generateRuntimeSkillId();
+    while (existing.has(skillId)) {
+      skillId = this.generateRuntimeSkillId();
+    }
+
+    const skill: RuntimeSkill = {
+      id: skillId,
+      label,
+      command,
+      cooldownMinutes,
+    };
+
+    const proposal: PendingSkillProposal = {
+      id: randomUUID(),
+      createdAt: new Date().toISOString(),
+      reason: input.reason,
+      skill,
+    };
+
+    this.state.pendingSkillProposals.push(proposal);
+    await this.persistState();
+    return proposal;
+  }
+
+  private async handleSkillCommand(commandText: string): Promise<string> {
+    if (!this.config) {
+      return 'Config is not initialized yet.';
+    }
+
+    const args = commandText.split(' ');
+    const op = (args[1] ?? 'help').toLowerCase();
+
+    if (op === 'list' || op === 'ls' || op === 'commands') {
+      return this.commandsListText();
+    }
+
+    if (op === 'pending') {
+      if (this.state.pendingSkillProposals.length === 0) {
+        return 'No pending skill proposals.';
+      }
+
+      const lines = this.state.pendingSkillProposals
+        .slice()
+        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+        .map((p) => {
+          const cmd = p.skill.command.length > 120 ? `${p.skill.command.slice(0, 120)}...` : p.skill.command;
+          const reason = p.reason ? ` | reason: ${p.reason}` : '';
+          return `${p.id} | ${p.skill.id} | ${p.skill.label} | cooldown ${p.skill.cooldownMinutes}m | ${cmd}${reason}`;
+        });
+
+      return [
+        'Pending skill proposals:',
+        ...lines,
+        '',
+        'Approve: /skill approve <proposalId> yes',
+        'Reject: /skill reject <proposalId>',
+      ].join('\n');
+    }
+
+    if (op === 'propose') {
+      const payload = commandText.replace(/^\/skill\s+propose\s*/i, '').trim();
+      const parts = payload.split('|').map((p) => p.trim());
+      const label = parts[0] ?? '';
+      const command = parts[1] ?? '';
+      const cooldownMinutes = parts[2] ? Number(parts[2]) : undefined;
+
+      if (!label || !command) {
+        return 'Usage: /skill propose <label> | <command> | <cooldownMinutes?>';
+      }
+
+      try {
+        const proposal = await this.createPendingSkillProposal({ label, command, cooldownMinutes, reason: 'chat-propose' });
+        return [
+          `Proposed skill: ${proposal.skill.id} | ${proposal.skill.label} | cooldown ${proposal.skill.cooldownMinutes}m`,
+          `Proposal ID: ${proposal.id}`,
+          `Approve: /skill approve ${proposal.id} yes`,
+          `Reject: /skill reject ${proposal.id}`,
+        ].join('\n');
+      } catch (error) {
+        return `Skill proposal failed: ${(error as Error).message}`;
+      }
+    }
+
+    if (op === 'approve') {
+      const proposalId = args[2];
+      const confirm = (args[3] ?? '').toLowerCase();
+      if (!proposalId) {
+        return 'Usage: /skill approve <proposalId> yes';
+      }
+      if (confirm !== 'yes') {
+        return 'To approve a proposed skill, run: /skill approve <proposalId> yes';
+      }
+
+      const index = this.state.pendingSkillProposals.findIndex((p) => p.id === proposalId);
+      if (index === -1) {
+        return 'Proposal not found.';
+      }
+
+      const proposal = this.state.pendingSkillProposals[index];
+      const existingIds = new Set(this.listExecutableSkills().map((s) => s.id));
+      if (existingIds.has(proposal.skill.id)) {
+        return `Cannot approve: skill id '${proposal.skill.id}' already exists. Remove/rename it and try again.`;
+      }
+
+      this.state.runtimeSkills.push(proposal.skill);
+      this.state.pendingSkillProposals.splice(index, 1);
+      await this.persistState();
+
+      const enabledText = this.config.selfHealing.enabled ? '' : '\nNote: self-healing is currently disabled; enable it with /config set selfHealing.enabled true';
+      return `Approved skill: ${proposal.skill.id} | ${proposal.skill.label}\nRun it with: /run ${proposal.skill.id}${enabledText}`;
+    }
+
+    if (op === 'reject') {
+      const proposalId = args[2];
+      if (!proposalId) {
+        return 'Usage: /skill reject <proposalId>';
+      }
+
+      const index = this.state.pendingSkillProposals.findIndex((p) => p.id === proposalId);
+      if (index === -1) {
+        return 'Proposal not found.';
+      }
+
+      const [removed] = this.state.pendingSkillProposals.splice(index, 1);
+      await this.persistState();
+      return `Rejected proposal ${removed.id} (${removed.skill.label}).`;
+    }
+
+    if (op === 'remove') {
+      const skillId = args[2];
+      if (!skillId) {
+        return 'Usage: /skill remove <skillId>';
+      }
+
+      const inConfig = this.config.selfHealing.commands.some((c) => c.id === skillId);
+      if (inConfig) {
+        return 'This skill is defined in config.json and cannot be removed from chat.';
+      }
+
+      const index = this.state.runtimeSkills.findIndex((s) => s.id === skillId);
+      if (index === -1) {
+        return 'Runtime skill not found.';
+      }
+
+      const [removed] = this.state.runtimeSkills.splice(index, 1);
+      await this.persistState();
+      return `Removed runtime skill: ${removed.id} | ${removed.label}`;
+    }
+
+    return [
+      'Skill commands:',
+      '/skill list',
+      '/skill pending',
+      '/skill propose <label> | <command> | <cooldownMinutes?>',
+      '/skill approve <proposalId> yes',
+      '/skill reject <proposalId>',
+      '/skill remove <skillId>',
+      '',
+      'Notes:',
+      '- Skills execute shell commands (guarded by selfHealing.enabled, cooldowns, and daily quota).',
+      '- Skill proposals require explicit approval before they can run.',
+    ].join('\n');
+  }
+
   private async answerQuestion(question: string): Promise<string> {
     if (!this.healthService || !this.automationService) {
       throw new Error('Plugin runtime is not initialized');
@@ -2402,8 +2724,10 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       '/watchdog - Trigger watchdog investigation',
       '/ask <question> - Ask about Homebridge state',
       '/config - View/modify runtime config',
-      '/commands - List self-healing command IDs',
-      '/run <commandId> - Run an allowed self-healing command',
+      '/skills - List skills (config commands + runtime skills)',
+      '/skill - Manage runtime skills',
+      '/commands - List skills (alias)',
+      '/run <commandId> - Run an allowed skill/command',
       '/automation list',
       '/automation add <name> | <cron> | <prompt>',
       '/automation remove <id>',
