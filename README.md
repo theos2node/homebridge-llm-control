@@ -30,9 +30,27 @@ Or use Homebridge UI search for `homebridge-llm-control`.
 
 ## Configuration
 
-Use Homebridge UI plugin settings (recommended) or `config.json`.
+You can configure this plugin either:
+
+- In Homebridge UI plugin settings / `config.json`, or
+- Directly from Telegram (recommended for “dirt simple” setup): `/setup` and `/config ...`
 
 ### Example config
+
+Minimal (Telegram only; then configure the LLM via `/setup` in chat):
+
+```json
+{
+  "platform": "LLMControl",
+  "name": "LLM Control",
+  "messaging": {
+    "botToken": "123456789:AA...",
+    "pairingMode": "first_message"
+  }
+}
+```
+
+Full example:
 
 ```json
 {
@@ -98,19 +116,43 @@ Use Homebridge UI plugin settings (recommended) or `config.json`.
    - **Auto-link first chat (easiest):** send any message to your bot and it will link that chat.
    - **Secret:** set a pairing secret in plugin settings, then send `/link <secret>` to your bot.
    - **Onboarding code:** the plugin will accept `/start <code>` (code is shown in Homebridge logs).
+4. Run `/setup` in Telegram to configure your LLM provider (API key + model) from chat.
 
 ## Telegram commands
 
 - `/status`
 - `/unlink`
 - `/help`
+- `/setup`
+- `/cancel`
 - `/health`
 - `/watchdog`
 - `/ask <question>`
+- `/config` (show/set/get/reset runtime settings)
+- `/commands` (list self-healing command IDs)
+- `/run <commandId>` (run an allowed self-healing command)
 - `/automation list`
 - `/automation add <name> | <cron> | <prompt>`
 - `/automation remove <id>`
 - `/automation toggle <id> <on|off>`
+- `/devices`
+- `/device add <switch|light> <name>`
+- `/device remove <id>`
+- `/device rename <id> <new name>`
+- `/set <id> <on|off>`
+- `/set <id> brightness <0-100>`
+
+## Controlling lights and devices
+
+Homebridge runs many plugins in separate child bridge processes. A plugin can’t reliably “reach into” other child bridges to directly toggle their accessories.
+
+This plugin provides **virtual HomeKit devices** you can control from Telegram. Then you mirror them to real accessories using HomeKit automations:
+
+1. Create a virtual device from chat, for example: `/device add light Kitchen Light`
+2. In the Home app, create an automation:
+   - “When Kitchen Light is controlled…”
+   - Set your real light accessory to match
+3. Now you can message your bot things like “turn on kitchen light” (LLM configured) or use `/set <id> on`
 
 ## Safety model
 

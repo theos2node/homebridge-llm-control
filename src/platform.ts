@@ -1,4 +1,5 @@
 import { exec as execCallback } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import cron, { ScheduledTask } from 'node-cron';
 import {
@@ -11,30 +12,80 @@ import {
   AutomationRule,
   LLMControlNormalizedConfig,
   LLMControlPlatformConfig,
+  PLUGIN_NAME,
   PLATFORM_NAME,
   normalizeConfig,
 } from './settings';
 import { OpenAIClient } from './llm/openai-client';
-import { StateStore, PersistentState } from './state/state-store';
+import { PersistentState, StateStore, VirtualDevice, VirtualDeviceType } from './state/state-store';
 import { HealthService } from './monitoring/health-service';
 import { TelegramService } from './messaging/telegram-service';
 import { AutomationService } from './automation/automation-service';
+import {
+  deepMerge,
+  getAtPath,
+  isPlainObject,
+  parseUserValue,
+  redactSecrets,
+  setAtPath,
+  unsetAtPath,
+} from './runtime/runtime-config';
 
 const execAsync = promisify(execCallback);
 
+const SECRET_PATHS: string[][] = [
+  ['provider', 'apiKey'],
+  ['messaging', 'botToken'],
+  ['messaging', 'pairingSecret'],
+];
+
+const ALLOWED_RUNTIME_CONFIG_PATHS = new Set<string>([
+  'provider.preset',
+  'provider.apiKey',
+  'provider.model',
+  'provider.baseUrl',
+  'provider.organization',
+  'provider.temperature',
+  'provider.maxTokens',
+  'provider.requestTimeoutMs',
+  'messaging.pairingMode',
+  'messaging.pairingSecret',
+  'messaging.onboardingCode',
+  'messaging.allowedChatIds',
+  'messaging.pollIntervalMs',
+  'monitoring.dailyMonitoringEnabled',
+  'monitoring.dailyMonitoringTime',
+  'monitoring.timezone',
+  'monitoring.includeLogs',
+  'monitoring.logFilePath',
+  'monitoring.maxLogLines',
+  'watchdog.enabled',
+  'watchdog.checkIntervalMinutes',
+  'watchdog.criticalPatterns',
+  'watchdog.autoTriggerOnCritical',
+  'selfHealing.enabled',
+  'selfHealing.maxActionsPerDay',
+]);
+
 export class LLMControlPlatform implements DynamicPlatformPlugin {
-  private readonly config?: LLMControlNormalizedConfig;
+  private readonly baseConfig?: LLMControlNormalizedConfig;
+  private config?: LLMControlNormalizedConfig;
   private readonly stateStore?: StateStore;
-  private readonly llmClient?: OpenAIClient;
-  private readonly healthService?: HealthService;
+  private llmClient?: OpenAIClient;
+  private healthService?: HealthService;
 
   private telegramService?: TelegramService;
   private automationService?: AutomationService;
   private dailyMonitorTask?: ScheduledTask;
   private watchdogTimer?: NodeJS.Timeout;
 
+  private readonly cachedAccessories = new Map<string, PlatformAccessory>();
+  private readonly virtualAccessories = new Map<string, PlatformAccessory>();
+
   private ready = false;
   private state: PersistentState = {
+    runtimeConfig: {},
+    virtualDevices: [],
     runtimeAutomations: [],
     commandCooldowns: {},
     actionQuota: {
@@ -44,6 +95,26 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
   };
   private lastWatchdogTriggeredAt?: string;
 
+  private pendingSetup?:
+    | {
+        step: 'preset';
+      }
+    | {
+        step: 'baseUrl';
+        preset: 'custom';
+      }
+    | {
+        step: 'apiKey';
+        preset: 'openai' | 'custom';
+        baseUrl?: string;
+      }
+    | {
+        step: 'model';
+        preset: 'openai' | 'custom';
+        baseUrl?: string;
+        apiKey: string;
+      };
+
   constructor(
     private readonly log: Logger,
     rawConfig: LLMControlPlatformConfig,
@@ -52,22 +123,13 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     this.log.info(`[${PLATFORM_NAME}] Initializing plugin...`);
 
     try {
-      this.config = normalizeConfig(rawConfig, this.log);
+      this.baseConfig = normalizeConfig(rawConfig, this.log);
     } catch (error) {
       this.log.error(`[${PLATFORM_NAME}] Invalid config. Plugin disabled: ${(error as Error).message}`);
       return;
     }
 
     this.stateStore = new StateStore(log, api.user.storagePath());
-    this.healthService = new HealthService(log, this.config, api.serverVersion);
-
-    if (this.config.provider.apiKey && (this.config.provider.preset !== 'custom' || this.config.provider.baseUrl)) {
-      this.llmClient = new OpenAIClient(log, { ...this.config.provider, apiKey: this.config.provider.apiKey });
-    } else {
-      this.log.warn(
-        `[${PLATFORM_NAME}] LLM provider is not fully configured (set provider.apiKey and baseUrl for custom). AI features will be disabled until configured.`,
-      );
-    }
 
     this.api.on('didFinishLaunching', () => {
       void this.bootstrap();
@@ -81,12 +143,12 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
   }
 
   configureAccessory(accessory: PlatformAccessory): void {
-    void accessory;
-    // This plugin runs background services and does not expose accessories.
+    // Called by Homebridge for cached accessories.
+    this.cachedAccessories.set(accessory.UUID, accessory);
   }
 
   private async bootstrap(): Promise<void> {
-    if (!this.config || !this.stateStore || !this.healthService) {
+    if (!this.baseConfig || !this.stateStore) {
       return;
     }
 
@@ -95,31 +157,84 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       this.state.setupHelloSent = false;
     }
 
+    await this.applyConfigUpdate('startup');
+
+    this.ready = true;
+    this.log.info(`[${PLATFORM_NAME}] Plugin started.`);
+  }
+
+  private computeEffectiveConfig(): LLMControlNormalizedConfig {
+    if (!this.baseConfig) {
+      throw new Error('Base config is not initialized');
+    }
+
+    const runtimeConfig = isPlainObject(this.state.runtimeConfig) ? this.state.runtimeConfig : {};
+    const merged = deepMerge(this.baseConfig, runtimeConfig);
+    return normalizeConfig(merged as unknown as LLMControlPlatformConfig, this.log);
+  }
+
+  private async applyConfigUpdate(reason: string): Promise<void> {
+    if (!this.baseConfig || !this.stateStore) {
+      return;
+    }
+
+    let nextConfig: LLMControlNormalizedConfig;
+    try {
+      nextConfig = this.computeEffectiveConfig();
+    } catch (error) {
+      this.log.error(`[${PLATFORM_NAME}] Failed to apply config update (${reason}): ${(error as Error).message}`);
+      return;
+    }
+
+    const previousConfig = this.config;
+    this.config = nextConfig;
+    this.healthService = new HealthService(this.log, nextConfig, this.api.serverVersion);
+
+    if (nextConfig.provider.apiKey && (nextConfig.provider.preset !== 'custom' || nextConfig.provider.baseUrl)) {
+      this.llmClient = new OpenAIClient(this.log, { ...nextConfig.provider, apiKey: nextConfig.provider.apiKey });
+    } else {
+      this.llmClient = undefined;
+      this.log.warn(
+        `[${PLATFORM_NAME}] LLM provider is not fully configured. Run /setup in Telegram or set provider.apiKey (and baseUrl for custom).`,
+      );
+    }
+
     if (!this.state.onboardingCode) {
-      this.state.onboardingCode = this.config.messaging.onboardingCode ?? this.generateOnboardingCode();
+      this.state.onboardingCode = nextConfig.messaging.onboardingCode ?? this.generateOnboardingCode();
       await this.persistState();
     }
 
+    // Automations
+    this.automationService?.stop();
     this.automationService = new AutomationService(
       this.log,
-      this.config.automations,
+      nextConfig.automations,
       this.state,
-      this.config.monitoring.timezone,
+      nextConfig.monitoring.timezone,
       async (rule) => {
         await this.handleAutomationTrigger(rule);
       },
     );
     this.automationService.start();
 
-    if (this.config.messaging.enabled && !this.config.messaging.botToken) {
-      this.log.warn(`[${PLATFORM_NAME}] Telegram messaging is enabled but no bot token is set. Messaging is disabled.`);
-    }
+    // Telegram
+    const tokenChanged =
+      previousConfig?.messaging.botToken !== nextConfig.messaging.botToken ||
+      previousConfig?.messaging.pollIntervalMs !== nextConfig.messaging.pollIntervalMs;
 
-    if (this.config.messaging.enabled && this.config.messaging.botToken) {
+    const shouldRunTelegram = nextConfig.messaging.enabled && Boolean(nextConfig.messaging.botToken);
+    if (!shouldRunTelegram) {
+      if (nextConfig.messaging.enabled && !nextConfig.messaging.botToken) {
+        this.log.warn(`[${PLATFORM_NAME}] Telegram messaging is enabled but no bot token is set. Messaging is disabled.`);
+      }
+      this.telegramService?.stop();
+      this.telegramService = undefined;
+    } else if (!this.telegramService || tokenChanged) {
+      this.telegramService?.stop();
       this.telegramService = new TelegramService(
         this.log,
-        this.config.messaging.botToken,
-        this.config.messaging.pollIntervalMs,
+        nextConfig.messaging.botToken as string,
+        nextConfig.messaging.pollIntervalMs,
         async (message) => {
           await this.handleTelegramMessage(message.chatId, message.text);
         },
@@ -127,8 +242,9 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
 
       try {
         await this.telegramService.start();
+
         if (this.state.linkedChatId) {
-          this.log.info(`[${PLATFORM_NAME}] Telegram is enabled and already linked to chat ${this.state.linkedChatId}.`);
+          this.log.info(`[${PLATFORM_NAME}] Telegram is enabled and linked to chat ${this.state.linkedChatId}.`);
           if (!this.state.setupHelloSent) {
             await this.telegramService.sendMessage(
               this.state.linkedChatId,
@@ -137,11 +253,11 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
             this.state.setupHelloSent = true;
             await this.persistState();
           }
-        } else if (this.config.messaging.pairingMode === 'first_message') {
+        } else if (nextConfig.messaging.pairingMode === 'first_message') {
           this.log.info(
             `[${PLATFORM_NAME}] Telegram pairing mode: auto-link first chat. Send any message to your bot to link.`,
           );
-        } else if (this.config.messaging.pairingMode === 'secret') {
+        } else if (nextConfig.messaging.pairingMode === 'secret') {
           this.log.info(
             `[${PLATFORM_NAME}] Telegram pairing mode: secret. Send /link <your-secret> to your bot to link.`,
           );
@@ -157,9 +273,11 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       }
     }
 
+    // Schedulers (daily monitor + watchdog)
     this.startSchedulers();
-    this.ready = true;
-    this.log.info(`[${PLATFORM_NAME}] Plugin started.`);
+
+    // Virtual devices
+    this.syncVirtualDevices();
   }
 
   private startSchedulers(): void {
@@ -172,34 +290,34 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     if (this.config.monitoring.dailyMonitoringEnabled) {
       if (!this.llmClient) {
         this.log.warn(`[${PLATFORM_NAME}] Daily monitoring is enabled but LLM is not configured. Skipping schedule.`);
-        return;
+      } else {
+        const [hour, minute] = this.config.monitoring.dailyMonitoringTime.split(':').map(Number);
+        const expression = `${minute} ${hour} * * *`;
+
+        this.dailyMonitorTask = cron.schedule(
+          expression,
+          async () => {
+            await this.runHealthAnalysis('daily-monitor', { notifyMode: 'always' });
+          },
+          { timezone: this.config.monitoring.timezone },
+        );
+
+        this.log.info(
+          `[${PLATFORM_NAME}] Daily monitoring scheduled at ${this.config.monitoring.dailyMonitoringTime} (${this.config.monitoring.timezone}).`,
+        );
       }
-      const [hour, minute] = this.config.monitoring.dailyMonitoringTime.split(':').map(Number);
-      const expression = `${minute} ${hour} * * *`;
-
-      this.dailyMonitorTask = cron.schedule(
-        expression,
-        async () => {
-          await this.runHealthAnalysis('daily-monitor', { notifyMode: 'always' });
-        },
-        { timezone: this.config.monitoring.timezone },
-      );
-
-      this.log.info(
-        `[${PLATFORM_NAME}] Daily monitoring scheduled at ${this.config.monitoring.dailyMonitoringTime} (${this.config.monitoring.timezone}).`,
-      );
     }
 
     if (this.config.watchdog.enabled) {
       if (!this.llmClient) {
         this.log.warn(`[${PLATFORM_NAME}] Watchdog is enabled but LLM is not configured. Skipping watchdog timer.`);
-        return;
+      } else {
+        const intervalMs = this.config.watchdog.checkIntervalMinutes * 60_000;
+        this.watchdogTimer = setInterval(() => {
+          void this.runWatchdog();
+        }, intervalMs);
+        this.log.info(`[${PLATFORM_NAME}] Watchdog interval set to ${this.config.watchdog.checkIntervalMinutes} minute(s).`);
       }
-      const intervalMs = this.config.watchdog.checkIntervalMinutes * 60_000;
-      this.watchdogTimer = setInterval(() => {
-        void this.runWatchdog();
-      }, intervalMs);
-      this.log.info(`[${PLATFORM_NAME}] Watchdog interval set to ${this.config.watchdog.checkIntervalMinutes} minute(s).`);
     }
   }
 
@@ -247,7 +365,7 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     }
 
     if (!this.llmClient) {
-      return `LLM provider is not configured. Set provider.apiKey in the plugin settings and restart Homebridge.`;
+      return `LLM provider is not configured. Send /setup in Telegram or set provider.apiKey in plugin settings.`;
     }
 
     const snapshot = await this.healthService.collectSnapshot(
@@ -400,6 +518,635 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     await this.sendNotification(message);
   }
 
+  private virtualDeviceUuid(deviceId: string): string {
+    return this.api.hap.uuid.generate(`homebridge-llm-control:virtual:${deviceId}`);
+  }
+
+  private getVirtualDevice(deviceId: string): VirtualDevice | undefined {
+    return this.state.virtualDevices.find((item) => item.id === deviceId);
+  }
+
+  private syncVirtualDevices(): void {
+    if (!this.stateStore) {
+      return;
+    }
+
+    const expectedUuids = new Set<string>();
+    this.virtualAccessories.clear();
+
+    for (const device of this.state.virtualDevices) {
+      const uuid = this.virtualDeviceUuid(device.id);
+      expectedUuids.add(uuid);
+
+      let accessory = this.cachedAccessories.get(uuid);
+      if (!accessory) {
+        accessory = new this.api.platformAccessory(device.name, uuid);
+        accessory.context.virtualDeviceId = device.id;
+        accessory.context.virtualDeviceType = device.type;
+        this.configureVirtualAccessory(accessory, device);
+
+        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        this.cachedAccessories.set(uuid, accessory);
+        this.log.info(`[${PLATFORM_NAME}] Registered virtual ${device.type}: ${device.name} (${device.id})`);
+      } else {
+        accessory.context.virtualDeviceId = device.id;
+        accessory.context.virtualDeviceType = device.type;
+
+        if (accessory.displayName !== device.name) {
+          accessory.displayName = device.name;
+          this.api.updatePlatformAccessories([accessory]);
+        }
+
+        this.configureVirtualAccessory(accessory, device);
+      }
+
+      this.virtualAccessories.set(device.id, accessory);
+    }
+
+    // Remove stale virtual accessories.
+    for (const [uuid, accessory] of this.cachedAccessories.entries()) {
+      const deviceId = (accessory.context as { virtualDeviceId?: string } | undefined)?.virtualDeviceId;
+      if (!deviceId) {
+        continue;
+      }
+
+      if (!expectedUuids.has(uuid)) {
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        this.cachedAccessories.delete(uuid);
+        this.log.info(`[${PLATFORM_NAME}] Unregistered virtual device: ${accessory.displayName} (${deviceId})`);
+      }
+    }
+  }
+
+  private configureVirtualAccessory(accessory: PlatformAccessory, device: VirtualDevice): void {
+    const { Service, Characteristic } = this.api.hap;
+
+    const info = accessory.getService(Service.AccessoryInformation) || accessory.addService(Service.AccessoryInformation);
+    info
+      .setCharacteristic(Characteristic.Manufacturer, 'homebridge-llm-control')
+      .setCharacteristic(Characteristic.Model, 'Virtual Device')
+      .setCharacteristic(Characteristic.SerialNumber, device.id);
+
+    // Ensure only one primary service type exists.
+    const removeAllOfType = (serviceType: typeof Service.Switch | typeof Service.Lightbulb): void => {
+      const toRemove = accessory.services.filter((svc) => svc.UUID === serviceType.UUID);
+      for (const svc of toRemove) {
+        accessory.removeService(svc);
+      }
+    };
+
+    let service:
+      | InstanceType<typeof Service.Switch>
+      | InstanceType<typeof Service.Lightbulb>;
+
+    if (device.type === 'switch') {
+      removeAllOfType(Service.Lightbulb);
+      service = accessory.getService(Service.Switch) || accessory.addService(Service.Switch, device.name);
+    } else {
+      removeAllOfType(Service.Switch);
+      service = accessory.getService(Service.Lightbulb) || accessory.addService(Service.Lightbulb, device.name);
+    }
+
+    service.getCharacteristic(Characteristic.On).onGet(() => device.on).onSet(async (value) => {
+      device.on = Boolean(value);
+      await this.persistState();
+    });
+
+    service.updateCharacteristic(Characteristic.On, device.on);
+
+    if (device.type === 'light') {
+      const defaultBrightness = typeof device.brightness === 'number' ? device.brightness : 100;
+      if (typeof device.brightness !== 'number') {
+        device.brightness = defaultBrightness;
+      }
+
+      service
+        .getCharacteristic(Characteristic.Brightness)
+        .onGet(() => (typeof device.brightness === 'number' ? device.brightness : 100))
+        .onSet(async (value) => {
+          const numeric = typeof value === 'number' ? value : Number(value);
+          if (Number.isFinite(numeric)) {
+            device.brightness = Math.max(0, Math.min(100, Math.round(numeric)));
+          }
+          await this.persistState();
+        });
+
+      service.updateCharacteristic(Characteristic.Brightness, device.brightness);
+    }
+  }
+
+  private async setVirtualDeviceState(
+    deviceId: string,
+    patch: { on?: boolean; brightness?: number },
+  ): Promise<VirtualDevice> {
+    const device = this.getVirtualDevice(deviceId);
+    if (!device) {
+      throw new Error(`Virtual device not found: ${deviceId}`);
+    }
+
+    if (typeof patch.on === 'boolean') {
+      device.on = patch.on;
+    }
+    if (typeof patch.brightness === 'number' && device.type === 'light') {
+      device.brightness = Math.max(0, Math.min(100, Math.round(patch.brightness)));
+    }
+
+    await this.persistState();
+
+    const accessory = this.virtualAccessories.get(deviceId);
+    if (accessory) {
+      const { Service, Characteristic } = this.api.hap;
+      const service =
+        device.type === 'switch' ? accessory.getService(Service.Switch) : accessory.getService(Service.Lightbulb);
+      if (service) {
+        service.updateCharacteristic(Characteristic.On, device.on);
+        if (device.type === 'light' && typeof device.brightness === 'number') {
+          service.updateCharacteristic(Characteristic.Brightness, device.brightness);
+        }
+      }
+    }
+
+    return device;
+  }
+
+  private async commitRuntimeConfig(nextRuntimeConfig: Record<string, unknown>, reason: string): Promise<void> {
+    if (!this.baseConfig) {
+      throw new Error('Base config is not initialized');
+    }
+
+    // Validate before saving.
+    normalizeConfig(deepMerge(this.baseConfig, nextRuntimeConfig) as unknown as LLMControlPlatformConfig, this.log);
+
+    this.state.runtimeConfig = nextRuntimeConfig;
+    await this.persistState();
+    await this.applyConfigUpdate(reason);
+  }
+
+  private async handleSetupConversation(chatId: string, trimmed: string): Promise<boolean> {
+    if (!this.pendingSetup || !this.telegramService) {
+      return false;
+    }
+
+    if (trimmed.startsWith('/') && trimmed !== '/cancel') {
+      return false;
+    }
+
+    if (trimmed === '/cancel') {
+      this.pendingSetup = undefined;
+      await this.telegramService.sendMessage(chatId, 'Setup cancelled.');
+      return true;
+    }
+
+    if (this.pendingSetup.step === 'preset') {
+      const lower = trimmed.toLowerCase();
+      if (lower === 'openai') {
+        this.pendingSetup = { step: 'apiKey', preset: 'openai' };
+        await this.telegramService.sendMessage(chatId, 'Send your OpenAI API key (starts with sk-...).');
+        return true;
+      }
+      if (lower === 'custom') {
+        this.pendingSetup = { step: 'baseUrl', preset: 'custom' };
+        await this.telegramService.sendMessage(chatId, 'Send your custom base URL (example: https://api.example.com/v1).');
+        return true;
+      }
+
+      await this.telegramService.sendMessage(chatId, "Reply with 'openai' or 'custom'. Send /cancel to abort.");
+      return true;
+    }
+
+    if (this.pendingSetup.step === 'baseUrl') {
+      try {
+        // Basic URL validation.
+        new URL(trimmed);
+      } catch {
+        await this.telegramService.sendMessage(chatId, 'That does not look like a valid URL. Try again or /cancel.');
+        return true;
+      }
+
+      this.pendingSetup = { step: 'apiKey', preset: 'custom', baseUrl: trimmed };
+      await this.telegramService.sendMessage(chatId, 'Send your API key for this provider.');
+      return true;
+    }
+
+    if (this.pendingSetup.step === 'apiKey') {
+      if (!trimmed) {
+        await this.telegramService.sendMessage(chatId, 'API key cannot be empty. Try again or /cancel.');
+        return true;
+      }
+
+      this.pendingSetup = {
+        step: 'model',
+        preset: this.pendingSetup.preset,
+        baseUrl: this.pendingSetup.baseUrl,
+        apiKey: trimmed,
+      };
+
+      await this.telegramService.sendMessage(
+        chatId,
+        "Send a model name (example: gpt-4.1-mini) or reply 'skip' to keep the default.",
+      );
+      return true;
+    }
+
+    if (this.pendingSetup.step === 'model') {
+      const model = trimmed.toLowerCase() === 'skip' ? undefined : trimmed;
+      const nextRuntime = (globalThis as unknown as { structuredClone?: <V>(input: V) => V }).structuredClone
+        ? structuredClone(this.state.runtimeConfig)
+        : (JSON.parse(JSON.stringify(this.state.runtimeConfig)) as Record<string, unknown>);
+
+      setAtPath(nextRuntime, ['provider', 'preset'], this.pendingSetup.preset);
+      setAtPath(nextRuntime, ['provider', 'apiKey'], this.pendingSetup.apiKey);
+      if (this.pendingSetup.preset === 'custom') {
+        setAtPath(nextRuntime, ['provider', 'baseUrl'], this.pendingSetup.baseUrl);
+      }
+      if (model) {
+        setAtPath(nextRuntime, ['provider', 'model'], model);
+      }
+
+      await this.commitRuntimeConfig(nextRuntime, 'setup');
+      this.pendingSetup = undefined;
+
+      await this.telegramService.sendMessage(
+        chatId,
+        [
+          "Provider configured. You're good to go.",
+          'Try: /health',
+          "To control real lights, create a virtual device with /device add light <name>, then map it to a real accessory using a HomeKit automation.",
+        ].join('\n'),
+      );
+      return true;
+    }
+
+    return false;
+  }
+
+  private async handleConfigCommand(commandText: string): Promise<string> {
+    if (!this.config || !this.baseConfig) {
+      return 'Config is not initialized yet.';
+    }
+
+    const args = commandText.split(' ');
+    const op = args[1] ?? 'help';
+
+    if (op === 'paths') {
+      return `Config paths you can set:\n- ${Array.from(ALLOWED_RUNTIME_CONFIG_PATHS).sort().join('\n- ')}`;
+    }
+
+    if (op === 'show') {
+      const effective = redactSecrets(this.config, SECRET_PATHS);
+      const runtime = redactSecrets(this.state.runtimeConfig, SECRET_PATHS);
+      return `Effective config (secrets redacted):\n${JSON.stringify(effective, null, 2)}\n\nRuntime overrides:\n${JSON.stringify(runtime, null, 2)}`;
+    }
+
+    if (op === 'get') {
+      const path = args[2];
+      if (!path) {
+        return 'Usage: /config get <path>';
+      }
+      const parts = path.split('.').filter(Boolean);
+      const value = getAtPath(this.config, parts);
+      return `${path} = ${JSON.stringify(redactSecrets(value, SECRET_PATHS), null, 2)}`;
+    }
+
+    if (op === 'set') {
+      const path = args[2];
+      if (!path) {
+        return 'Usage: /config set <path> <value>';
+      }
+      if (!ALLOWED_RUNTIME_CONFIG_PATHS.has(path)) {
+        return `Path not allowed. Use /config paths to see allowed paths.`;
+      }
+
+      const rawValue = commandText.split(' ').slice(3).join(' ').trim();
+      if (!rawValue) {
+        return 'Usage: /config set <path> <value>';
+      }
+
+      const nextRuntime = (globalThis as unknown as { structuredClone?: <V>(input: V) => V }).structuredClone
+        ? structuredClone(this.state.runtimeConfig)
+        : (JSON.parse(JSON.stringify(this.state.runtimeConfig)) as Record<string, unknown>);
+
+      const parts = path.split('.').filter(Boolean);
+      try {
+        setAtPath(nextRuntime, parts, parseUserValue(rawValue));
+        await this.commitRuntimeConfig(nextRuntime, `config:${path}`);
+      } catch (error) {
+        return `Config update failed: ${(error as Error).message}`;
+      }
+
+      return `Updated ${path}.`;
+    }
+
+    if (op === 'reset') {
+      const path = args[2];
+      if (!path) {
+        return 'Usage: /config reset <path>';
+      }
+      if (!ALLOWED_RUNTIME_CONFIG_PATHS.has(path)) {
+        return `Path not allowed. Use /config paths to see allowed paths.`;
+      }
+
+      const nextRuntime = (globalThis as unknown as { structuredClone?: <V>(input: V) => V }).structuredClone
+        ? structuredClone(this.state.runtimeConfig)
+        : (JSON.parse(JSON.stringify(this.state.runtimeConfig)) as Record<string, unknown>);
+
+      try {
+        unsetAtPath(nextRuntime, path.split('.').filter(Boolean));
+        await this.commitRuntimeConfig(nextRuntime, `config-reset:${path}`);
+      } catch (error) {
+        return `Config reset failed: ${(error as Error).message}`;
+      }
+      return `Reset ${path}.`;
+    }
+
+    if (op === 'reset-all') {
+      try {
+        await this.commitRuntimeConfig({}, 'config-reset-all');
+      } catch (error) {
+        return `Config reset failed: ${(error as Error).message}`;
+      }
+      return 'Reset all runtime overrides.';
+    }
+
+    return [
+      'Config commands:',
+      '/config show',
+      '/config get <path>',
+      '/config set <path> <value>',
+      '/config reset <path>',
+      '/config reset-all',
+      '/config paths',
+      'Note: changes are saved in Homebridge storage (they do not modify config.json).',
+    ].join('\n');
+  }
+
+  private async handleDeviceCommand(commandText: string): Promise<string> {
+    const args = commandText.split(' ');
+    const op = args[1] ?? 'help';
+
+    if (op === 'list') {
+      if (this.state.virtualDevices.length === 0) {
+        return 'No virtual devices yet. Add one with: /device add light <name>';
+      }
+
+      const lines = this.state.virtualDevices
+        .slice()
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map((device) => {
+          const state = device.on ? 'on' : 'off';
+          const bright = device.type === 'light' ? ` | ${device.brightness ?? 100}%` : '';
+          return `${device.id} | ${device.type} | ${device.name} | ${state}${bright}`;
+        });
+
+      return `Virtual devices:\n${lines.join('\n')}`;
+    }
+
+    if (op === 'add') {
+      const typeRaw = args[2] as VirtualDeviceType | undefined;
+      const type: VirtualDeviceType | undefined = typeRaw === 'switch' || typeRaw === 'light' ? typeRaw : undefined;
+      const name = commandText.split(' ').slice(3).join(' ').trim();
+
+      if (!type || !name) {
+        return 'Usage: /device add <switch|light> <name>';
+      }
+
+      const device: VirtualDevice = {
+        id: randomUUID(),
+        type,
+        name,
+        on: false,
+        brightness: type === 'light' ? 100 : undefined,
+      };
+
+      this.state.virtualDevices.push(device);
+      await this.persistState();
+      this.syncVirtualDevices();
+
+      return [
+        `Added virtual ${type}: ${name}`,
+        `ID: ${device.id}`,
+        "Tip: In the Home app, create an automation that mirrors this virtual device to your real light. Then you can control it from chat.",
+      ].join('\n');
+    }
+
+    if (op === 'remove') {
+      const id = args[2];
+      if (!id) {
+        return 'Usage: /device remove <id>';
+      }
+
+      const index = this.state.virtualDevices.findIndex((item) => item.id === id);
+      if (index === -1) {
+        return 'Virtual device not found.';
+      }
+
+      const [removed] = this.state.virtualDevices.splice(index, 1);
+      await this.persistState();
+      this.syncVirtualDevices();
+      return `Removed virtual device: ${removed.name} (${removed.id})`;
+    }
+
+    if (op === 'rename') {
+      const id = args[2];
+      const name = commandText.split(' ').slice(3).join(' ').trim();
+      if (!id || !name) {
+        return 'Usage: /device rename <id> <new name>';
+      }
+
+      const device = this.getVirtualDevice(id);
+      if (!device) {
+        return 'Virtual device not found.';
+      }
+
+      device.name = name;
+      await this.persistState();
+      this.syncVirtualDevices();
+      return `Renamed virtual device ${id} to '${name}'.`;
+    }
+
+    return [
+      'Device commands:',
+      '/device list',
+      '/device add <switch|light> <name>',
+      '/device remove <id>',
+      '/device rename <id> <new name>',
+      '/set <id> <on|off>',
+      '/set <id> brightness <0-100>',
+    ].join('\n');
+  }
+
+  private async handleSetCommand(commandText: string): Promise<string> {
+    const args = commandText.split(' ');
+    const id = args[1];
+    const op = args[2];
+    if (!id || !op) {
+      return 'Usage: /set <id> <on|off> OR /set <id> brightness <0-100>';
+    }
+
+    if (op === 'on' || op === 'off') {
+      const device = await this.setVirtualDeviceState(id, { on: op === 'on' });
+      return `Set ${device.name}: ${device.on ? 'ON' : 'OFF'}`;
+    }
+
+    if (op === 'brightness') {
+      const raw = args[3];
+      if (!raw) {
+        return 'Usage: /set <id> brightness <0-100>';
+      }
+      const value = Number(raw);
+      if (!Number.isFinite(value)) {
+        return 'Brightness must be a number 0-100.';
+      }
+
+      const device = await this.setVirtualDeviceState(id, { brightness: value });
+      if (device.type !== 'light') {
+        return 'This virtual device does not support brightness.';
+      }
+      return `Set ${device.name} brightness: ${device.brightness ?? 100}%`;
+    }
+
+    return 'Usage: /set <id> <on|off> OR /set <id> brightness <0-100>';
+  }
+
+  private async handleRunCommand(commandText: string): Promise<string> {
+    if (!this.config) {
+      return 'Config is not initialized yet.';
+    }
+
+    const args = commandText.split(' ');
+    const commandId = args[1];
+    if (!commandId) {
+      return 'Usage: /run <commandId>';
+    }
+
+    if (!this.config.selfHealing.enabled) {
+      return 'Self-healing is disabled. Enable it with /config set selfHealing.enabled true';
+    }
+
+    const results = await this.executeHealingActions([{ commandId, reason: 'manual-run' }]);
+    if (results.length === 0) {
+      return 'No actions executed.';
+    }
+    return `Run result:\n- ${results.join('\n- ')}`;
+  }
+
+  private commandsListText(): string {
+    if (!this.config) {
+      return 'Config is not initialized yet.';
+    }
+
+    if (this.config.selfHealing.commands.length === 0) {
+      return 'No self-healing commands configured in plugin settings.';
+    }
+
+    const lines = this.config.selfHealing.commands.map((cmd) => `${cmd.id} | ${cmd.label} | cooldown ${cmd.cooldownMinutes}m`);
+    return `Self-healing commands:\n${lines.join('\n')}`;
+  }
+
+  private async assistantChat(text: string): Promise<string> {
+    if (!this.healthService || !this.automationService) {
+      return 'Plugin runtime is not initialized yet.';
+    }
+
+    if (!this.llmClient) {
+      return `LLM provider is not configured. Send /setup to configure it.`;
+    }
+
+    const snapshot = await this.healthService.collectSnapshot(
+      this.automationService.listAll(),
+      this.lastWatchdogTriggeredAt,
+    );
+
+    const devices = this.state.virtualDevices.map((d) => ({
+      id: d.id,
+      name: d.name,
+      type: d.type,
+      on: d.on,
+      brightness: d.type === 'light' ? d.brightness ?? 100 : undefined,
+    }));
+
+    const systemPrompt = [
+      'You are a Homebridge assistant with limited actions.',
+      'Return ONLY valid JSON with this schema:',
+      '{"reply":"string","actions":[{"type":"set_virtual_device","deviceId":"string","on":boolean,"brightness":number?},{"type":"run_health"},{"type":"run_watchdog"}]}',
+      'Only use deviceId values from devices. Never invent ids.',
+      "If the user asks to control a real light, prefer controlling a matching virtual device by name (if present) and explain that a HomeKit automation should mirror it.",
+    ].join(' ');
+
+    const userPrompt = JSON.stringify(
+      {
+        message: text,
+        snapshot,
+        devices,
+      },
+      null,
+      2,
+    );
+
+    let payload: unknown;
+    try {
+      payload = await this.llmClient.chatJson(systemPrompt, userPrompt);
+    } catch {
+      // Fallback: plain Q&A.
+      return this.answerQuestion(text);
+    }
+
+    if (!isPlainObject(payload)) {
+      return this.answerQuestion(text);
+    }
+
+    const reply = typeof payload.reply === 'string' ? payload.reply : '';
+    const actionsRaw = Array.isArray(payload.actions) ? payload.actions : [];
+
+    const actionResults: string[] = [];
+    for (const action of actionsRaw) {
+      if (!isPlainObject(action) || typeof action.type !== 'string') {
+        continue;
+      }
+
+      if (action.type === 'set_virtual_device') {
+        const deviceId = typeof action.deviceId === 'string' ? action.deviceId : '';
+        const on = typeof action.on === 'boolean' ? action.on : undefined;
+        const brightness = typeof action.brightness === 'number' ? action.brightness : undefined;
+        if (!deviceId || on === undefined) {
+          continue;
+        }
+
+        try {
+          const updated = await this.setVirtualDeviceState(deviceId, { on, brightness });
+          const brightText =
+            updated.type === 'light' && typeof updated.brightness === 'number' ? ` (${updated.brightness}%)` : '';
+          actionResults.push(`Set ${updated.name}: ${updated.on ? 'ON' : 'OFF'}${brightText}`);
+        } catch (error) {
+          actionResults.push(`Failed to set device ${deviceId}: ${(error as Error).message}`);
+        }
+        continue;
+      }
+
+      if (action.type === 'run_health') {
+        const result = await this.runHealthAnalysis('assistant-health', { notifyMode: 'never' });
+        actionResults.push(result);
+        continue;
+      }
+
+      if (action.type === 'run_watchdog') {
+        const result = await this.runHealthAnalysis('assistant-watchdog', { notifyMode: 'never' });
+        actionResults.push(result);
+        continue;
+      }
+    }
+
+    if (actionResults.length === 0) {
+      return reply || this.answerQuestion(text);
+    }
+
+    if (!reply) {
+      return actionResults.join('\n\n');
+    }
+
+    return `${reply}\n\n${actionResults.join('\n\n')}`;
+  }
+
   private async handleTelegramMessage(chatId: string, text: string): Promise<void> {
     if (!this.config || !this.telegramService) {
       return;
@@ -469,8 +1216,26 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       return;
     }
 
+    if (await this.handleSetupConversation(chatId, trimmed)) {
+      return;
+    }
+
+    if (trimmed === '/cancel') {
+      await this.telegramService.sendMessage(chatId, 'Nothing to cancel.');
+      return;
+    }
+
     if (trimmed.toLowerCase().startsWith('/link')) {
       await this.telegramService.sendMessage(chatId, 'This bot is already linked. Use /unlink to re-pair.');
+      return;
+    }
+
+    if (trimmed === '/setup') {
+      this.pendingSetup = { step: 'preset' };
+      await this.telegramService.sendMessage(
+        chatId,
+        "Setup: reply with 'openai' or 'custom'. Send /cancel to abort.",
+      );
       return;
     }
 
@@ -495,6 +1260,41 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
 
     if (trimmed === '/help') {
       await this.telegramService.sendMessage(chatId, this.helpText());
+      return;
+    }
+
+    if (trimmed.startsWith('/config')) {
+      const response = await this.handleConfigCommand(trimmed);
+      await this.telegramService.sendMessage(chatId, response);
+      return;
+    }
+
+    if (trimmed === '/commands' || trimmed === '/commands list') {
+      await this.telegramService.sendMessage(chatId, this.commandsListText());
+      return;
+    }
+
+    if (trimmed.startsWith('/run ')) {
+      const response = await this.handleRunCommand(trimmed);
+      await this.telegramService.sendMessage(chatId, response);
+      return;
+    }
+
+    if (trimmed === '/devices') {
+      const response = await this.handleDeviceCommand('/device list');
+      await this.telegramService.sendMessage(chatId, response);
+      return;
+    }
+
+    if (trimmed.startsWith('/device')) {
+      const response = await this.handleDeviceCommand(trimmed);
+      await this.telegramService.sendMessage(chatId, response);
+      return;
+    }
+
+    if (trimmed.startsWith('/set ')) {
+      const response = await this.handleSetCommand(trimmed);
+      await this.telegramService.sendMessage(chatId, response);
       return;
     }
 
@@ -528,7 +1328,7 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       return;
     }
 
-    const answer = await this.answerQuestion(trimmed);
+    const answer = await this.assistantChat(trimmed);
     await this.telegramService.sendMessage(chatId, answer);
   }
 
@@ -610,7 +1410,7 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     }
 
     if (!this.llmClient) {
-      return `LLM provider is not configured. Set provider.apiKey in the plugin settings and restart Homebridge.`;
+      return `LLM provider is not configured. Send /setup in Telegram or set provider.apiKey in plugin settings.`;
     }
 
     const snapshot = await this.healthService.collectSnapshot(
@@ -677,10 +1477,21 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       '/status - Show link status',
       '/unlink - Unlink this chat',
       '/link <secret> - Link chat (only used before linking in Secret mode)',
+      '/setup - Guided LLM provider setup',
+      '/cancel - Cancel a guided setup',
       '/help - Show this message',
       '/health - Run health analysis now',
       '/watchdog - Trigger watchdog investigation',
       '/ask <question> - Ask about Homebridge state',
+      '/config - View/modify runtime config',
+      '/commands - List self-healing command IDs',
+      '/run <commandId> - Run an allowed self-healing command',
+      '/devices - List virtual devices',
+      '/device add <switch|light> <name>',
+      '/device remove <id>',
+      '/device rename <id> <new name>',
+      '/set <id> <on|off>',
+      '/set <id> brightness <0-100>',
       '/automation list',
       '/automation add <name> | <cron> | <prompt>',
       '/automation remove <id>',

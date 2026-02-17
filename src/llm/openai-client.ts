@@ -36,6 +36,44 @@ export class OpenAIClient {
     return response.choices[0]?.message?.content?.trim() ?? 'No response from model.';
   }
 
+  async chatJson(systemPrompt: string, userPrompt: string): Promise<unknown> {
+    let raw: string | null | undefined;
+
+    try {
+      const response = await this.client.chat.completions.create({
+        model: this.config.model,
+        temperature: 0,
+        max_tokens: this.config.maxTokens,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+      });
+      raw = response.choices[0]?.message?.content;
+    } catch (error) {
+      // Some OpenAI-compatible APIs don't support json_object mode; retry without it.
+      this.log.warn(`JSON mode failed; retrying without response_format: ${(error as Error).message}`);
+      const response = await this.client.chat.completions.create({
+        model: this.config.model,
+        temperature: 0,
+        max_tokens: this.config.maxTokens,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+      });
+      raw = response.choices[0]?.message?.content;
+    }
+
+    if (!raw) {
+      throw new Error('Model returned an empty JSON response');
+    }
+
+    const jsonCandidate = this.extractJsonCandidate(raw);
+    return JSON.parse(jsonCandidate) as unknown;
+  }
+
   async analyzeHealth(systemPrompt: string, userPrompt: string): Promise<LLMAnalysisResult> {
     let raw: string | null | undefined;
 

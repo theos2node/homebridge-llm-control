@@ -2,7 +2,7 @@
   "pluginAlias": "LLMControl",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Homebridge LLM Control lets you connect an LLM (OpenAI or compatible), use Telegram for chat/onboarding, run daily monitoring, watchdog checks, and safe self-healing actions.\\n\\nTelegram quick setup:\\n1) Create a bot with @BotFather and copy the bot token\\n2) Paste the token below\\n3) Pairing mode: Auto-link first chat (easiest) then send any message to your bot",
+  "headerDisplay": "Homebridge LLM Control lets you connect an LLM (OpenAI or compatible), use Telegram for chat/onboarding, run daily monitoring, watchdog checks, and safe self-healing actions.\\n\\nTelegram quick setup:\\n1) Create a bot with @BotFather and copy the bot token\\n2) Paste the token below (Telegram auto-enables)\\n3) Pairing mode: Auto-link first chat (easiest) then send any message to your bot\\n4) In Telegram, run /setup to configure your LLM API key + model from chat",
   "footerDisplay": "Security note: use least-privilege API keys and only whitelist trusted self-healing commands.",
   "schema": {
     "type": "object",
@@ -35,7 +35,7 @@
           "apiKey": {
             "type": "string",
             "title": "API Key",
-            "required": true
+            "description": "Optional if you prefer configuring via Telegram /setup."
           },
           "model": {
             "type": "string",
