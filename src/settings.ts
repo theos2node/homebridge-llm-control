@@ -196,6 +196,11 @@ export const normalizeConfig = (config: LLMControlPlatformConfig, log?: Logger):
   const raw = parsed.data;
 
   const messaging: MessagingConfig = { ...raw.messaging };
+  if (!messaging.enabled && messaging.botToken) {
+    // Make setup dirt-simple: pasting a token effectively enables Telegram.
+    messaging.enabled = true;
+    log?.info(`[${PLATFORM_NAME}] Telegram enabled automatically because a bot token is set.`);
+  }
   if (messaging.enabled && !messaging.botToken) {
     log?.warn(`[${PLATFORM_NAME}] Telegram is enabled but messaging.botToken is missing.`);
   }

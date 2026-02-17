@@ -91,6 +91,9 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     }
 
     this.state = await this.stateStore.load();
+    if (!this.state.linkedChatId) {
+      this.state.setupHelloSent = false;
+    }
 
     if (!this.state.onboardingCode) {
       this.state.onboardingCode = this.config.messaging.onboardingCode ?? this.generateOnboardingCode();
@@ -126,6 +129,14 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
         await this.telegramService.start();
         if (this.state.linkedChatId) {
           this.log.info(`[${PLATFORM_NAME}] Telegram is enabled and already linked to chat ${this.state.linkedChatId}.`);
+          if (!this.state.setupHelloSent) {
+            await this.telegramService.sendMessage(
+              this.state.linkedChatId,
+              `Hey it's set up. Homebridge LLM Control is online. Send /help to see commands.`,
+            );
+            this.state.setupHelloSent = true;
+            await this.persistState();
+          }
         } else if (this.config.messaging.pairingMode === 'first_message') {
           this.log.info(
             `[${PLATFORM_NAME}] Telegram pairing mode: auto-link first chat. Send any message to your bot to link.`,
@@ -401,8 +412,12 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
 
       if (mode === 'first_message') {
         this.state.linkedChatId = chatId;
+        this.state.setupHelloSent = true;
         await this.persistState();
-        await this.telegramService.sendMessage(chatId, 'Linked. Send /help to see commands.');
+        await this.telegramService.sendMessage(
+          chatId,
+          `Hey it's set up. This chat is now linked to Homebridge LLM Control. Send /help to see commands.`,
+        );
         return;
       }
 
@@ -411,8 +426,12 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
         const suppliedSecret = match?.[2]?.trim();
         if (suppliedSecret && suppliedSecret === this.config.messaging.pairingSecret) {
           this.state.linkedChatId = chatId;
+          this.state.setupHelloSent = true;
           await this.persistState();
-          await this.telegramService.sendMessage(chatId, 'Linked. Send /help to see commands.');
+          await this.telegramService.sendMessage(
+            chatId,
+            `Hey it's set up. This chat is now linked to Homebridge LLM Control. Send /help to see commands.`,
+          );
           return;
         }
 
@@ -428,8 +447,12 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
         const suppliedCode = trimmed.split(/\s+/)[1];
         if (suppliedCode && suppliedCode === this.state.onboardingCode) {
           this.state.linkedChatId = chatId;
+          this.state.setupHelloSent = true;
           await this.persistState();
-          await this.telegramService.sendMessage(chatId, 'Linked. Send /help to see commands.');
+          await this.telegramService.sendMessage(
+            chatId,
+            `Hey it's set up. This chat is now linked to Homebridge LLM Control. Send /help to see commands.`,
+          );
           return;
         }
       }
@@ -461,6 +484,7 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
 
     if (trimmed === '/unlink') {
       this.state.linkedChatId = undefined;
+      this.state.setupHelloSent = false;
       await this.persistState();
       await this.telegramService.sendMessage(
         chatId,

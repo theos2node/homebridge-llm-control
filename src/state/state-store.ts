@@ -13,6 +13,7 @@ type RuntimeAutomation = {
 export type PersistentState = {
   onboardingCode?: string;
   linkedChatId?: string;
+  setupHelloSent?: boolean;
   runtimeAutomations: RuntimeAutomation[];
   commandCooldowns: Record<string, string>;
   actionQuota: {
@@ -24,6 +25,7 @@ export type PersistentState = {
 const defaultState = (): PersistentState => ({
   runtimeAutomations: [],
   commandCooldowns: {},
+  setupHelloSent: false,
   actionQuota: {
     date: new Date().toISOString().slice(0, 10),
     count: 0,
@@ -45,6 +47,7 @@ export class StateStore {
       return {
         onboardingCode: parsed.onboardingCode,
         linkedChatId: parsed.linkedChatId,
+        setupHelloSent: parsed.setupHelloSent ?? false,
         runtimeAutomations: Array.isArray(parsed.runtimeAutomations) ? parsed.runtimeAutomations : [],
         commandCooldowns: parsed.commandCooldowns ?? {},
         actionQuota: parsed.actionQuota ?? defaultState().actionQuota,
