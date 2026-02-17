@@ -28,7 +28,20 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Publish
-        run: npm publish --access public
+      - name: Publish (Skip If Already Published)
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG_NAME="$(node -p "require('./package.json').name")"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+
+          echo "Package: ${PKG_NAME}@${PKG_VERSION}"
+
+          if npm view "${PKG_NAME}@${PKG_VERSION}" version --registry https://registry.npmjs.org/ >/dev/null 2>&1; then
+            echo "Already published on npm; skipping publish."
+            exit 0
+          fi
+
+          npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
