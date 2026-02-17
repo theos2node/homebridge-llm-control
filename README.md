@@ -1,5 +1,11 @@
 # homebridge-llm-control
 
+[![npm version](https://img.shields.io/npm/v/homebridge-llm-control)](https://www.npmjs.com/package/homebridge-llm-control)
+[![CI](https://github.com/theos2node/homebridge-llm-control/actions/workflows/ci.yml/badge.svg)](https://github.com/theos2node/homebridge-llm-control/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+Project page (GitHub Pages): https://theos2node.github.io/homebridge-llm-control/
+
 LLM-powered operations plugin for Homebridge with:
 
 - LLM provider presets (`OpenAI` + custom OpenAI-compatible endpoint)
@@ -203,6 +209,19 @@ Quick start:
 4. Schedule an action: `/hb schedule 30m off lights`
 
 Tip: once your LLM provider is configured, you can also just type: "turn off the lights in 30 minutes".
+
+## Troubleshooting
+
+### "Why can Homebridge UI control my HomeKit devices, but the plugin can't?"
+
+This plugin controls what Homebridge exposes as accessories (from Homebridge plugins / child bridges / external accessories).
+
+If something is only in the iOS Home app (native HomeKit) and not present as a Homebridge accessory, it will not appear in:
+
+- `/hb list`
+- LLM device list
+
+Fix: add the right Homebridge plugin for that ecosystem (or a HomeKit-controller style plugin), then confirm it shows up in Homebridge UI.
 
 ## Skills (runtime shell commands)
 

@@ -1,0 +1,151 @@
+:root {
+  --bg: #b8b8b8;
+  --panel: #ffffff;
+  --ink: #0b0b0b;
+  --nav: #001a7a;
+  --nav-ink: #ffffff;
+  --border: #000000;
+  --muted: #4b4b4b;
+  --code-bg: #f4f4f4;
+  --code-border: #d1d1d1;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--ink);
+  background: var(--bg);
+  font-family: Verdana, Arial, Helvetica, sans-serif;
+  line-height: 1.35;
+}
+
+code,
+pre {
+  font-family: "Courier New", Courier, monospace;
+}
+
+.wrap {
+  max-width: 980px;
+  margin: 18px auto;
+  padding: 0 12px;
+}
+
+.header {
+  border: 2px solid var(--border);
+  background: var(--panel);
+  padding: 16px 18px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 28px;
+  letter-spacing: 0.2px;
+}
+
+.tagline {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.nav {
+  margin-top: 10px;
+  border: 2px solid var(--border);
+  background: var(--nav);
+  color: var(--nav-ink);
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+.nav a {
+  color: var(--nav-ink);
+  text-decoration: underline;
+}
+
+.nav .sep {
+  padding: 0 8px;
+  opacity: 0.9;
+}
+
+.box {
+  margin-top: 12px;
+  border: 2px solid var(--border);
+  background: var(--panel);
+  padding: 14px 16px;
+}
+
+h2 {
+  margin: 0 0 10px 0;
+  font-size: 18px;
+}
+
+h3 {
+  margin: 14px 0 6px 0;
+  font-size: 14px;
+}
+
+ul,
+ol {
+  margin: 8px 0 8px 22px;
+}
+
+.note {
+  border: 1px dashed #555;
+  background: #fffbe6;
+  padding: 10px 12px;
+  margin-top: 10px;
+  font-size: 13px;
+}
+
+.setup {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.setup th {
+  background: #e9e9e9;
+  text-align: left;
+  border: 1px solid #444;
+}
+
+.setup td {
+  vertical-align: top;
+  border: 1px solid #444;
+}
+
+.setup-title {
+  background: #f7f7f7;
+}
+
+pre {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  overflow-x: auto;
+}
+
+.footer {
+  margin-top: 12px;
+  border: 2px solid var(--border);
+  background: var(--panel);
+  padding: 10px 12px;
+}
+
+.small {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+@media (max-width: 720px) {
+  .setup th:first-child,
+  .setup td:first-child {
+    width: 42%;
+  }
+}
+
