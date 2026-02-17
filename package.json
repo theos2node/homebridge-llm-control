@@ -1,7 +1,7 @@
 {
   "name": "homebridge-llm-control",
-  "version": "1.1.1",
-  "description": "Homebridge plugin that adds LLM-powered monitoring, watchdog, and Telegram control.",
+  "version": "1.2.0",
+  "description": "Homebridge plugin that adds Telegram control for existing accessories plus LLM-powered monitoring, watchdog, and self-healing.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [

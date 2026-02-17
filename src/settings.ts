@@ -67,6 +67,19 @@ const monitoringSchema = z.object({
   maxLogLines: z.number().int().min(50).max(5000).default(300),
 });
 
+const homebridgeControlSchema = z.object({
+  enabled: z.boolean().default(true),
+  includeChildBridges: z.boolean().default(true),
+  refreshIntervalSeconds: z.number().int().min(10).max(3600).default(60),
+});
+
+const operationsSchema = z.object({
+  scheduledRestartEnabled: z.boolean().default(false),
+  restartEveryHours: z.number().int().min(1).max(168).default(12),
+  notifyOnHomebridgeStartup: z.boolean().default(false),
+  notifyOnHomebridgeRestart: z.boolean().default(true),
+});
+
 const watchdogSchema = z.object({
   enabled: z.boolean().default(false),
   checkIntervalMinutes: z.number().int().min(1).max(120).default(10),
@@ -105,6 +118,8 @@ const rootSchema = z.object({
   name: z.string().default('LLM Control'),
   provider: providerSchema.default({}),
   messaging: telegramSchema.default({ enabled: false }),
+  homebridgeControl: homebridgeControlSchema.default({}),
+  operations: operationsSchema.default({}),
   monitoring: monitoringSchema.default({}),
   watchdog: watchdogSchema.default({}),
   selfHealing: selfHealingSchema.default({}),
@@ -115,6 +130,8 @@ const rootSchema = z.object({
 export type ProviderConfig = z.infer<typeof providerSchema>;
 export type ProviderConfigWithKey = ProviderConfig & { apiKey: string };
 export type MessagingConfig = z.infer<typeof telegramSchema>;
+export type HomebridgeControlConfig = z.infer<typeof homebridgeControlSchema>;
+export type OperationsConfig = z.infer<typeof operationsSchema>;
 export type MonitoringConfig = z.infer<typeof monitoringSchema>;
 export type WatchdogConfig = z.infer<typeof watchdogSchema>;
 export type HealingCommandConfig = z.output<typeof healingCommandSchema>;
@@ -135,6 +152,8 @@ export type LLMControlNormalizedConfig = Omit<ParsedRootConfig, 'selfHealing' | 
 export type LLMControlPlatformConfig = PlatformConfig & {
   provider?: unknown;
   messaging?: unknown;
+  homebridgeControl?: unknown;
+  operations?: unknown;
   monitoring?: unknown;
   watchdog?: unknown;
   selfHealing?: unknown;

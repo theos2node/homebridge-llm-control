@@ -30,6 +30,8 @@ import {
   setAtPath,
   unsetAtPath,
 } from './runtime/runtime-config';
+import { HbEntity, HomebridgeAccessoryControl } from './homebridge/accessory-control';
+import { JobScheduler, OneShotJob, OneShotJobAction } from './scheduler/job-scheduler';
 
 const execAsync = promisify(execCallback);
 
@@ -50,11 +52,19 @@ const ALLOWED_RUNTIME_CONFIG_PATHS = new Set<string>([
   'provider.temperature',
   'provider.maxTokens',
   'provider.requestTimeoutMs',
+  'messaging.enabled',
   'messaging.pairingMode',
   'messaging.pairingSecret',
   'messaging.onboardingCode',
   'messaging.allowedChatIds',
   'messaging.pollIntervalMs',
+  'homebridgeControl.enabled',
+  'homebridgeControl.includeChildBridges',
+  'homebridgeControl.refreshIntervalSeconds',
+  'operations.scheduledRestartEnabled',
+  'operations.restartEveryHours',
+  'operations.notifyOnHomebridgeStartup',
+  'operations.notifyOnHomebridgeRestart',
   'monitoring.dailyMonitoringEnabled',
   'monitoring.dailyMonitoringTime',
   'monitoring.timezone',
@@ -69,6 +79,41 @@ const ALLOWED_RUNTIME_CONFIG_PATHS = new Set<string>([
   'selfHealing.maxActionsPerDay',
 ]);
 
+const parseDurationToSeconds = (input: string): number | null => {
+  const trimmed = input.trim().toLowerCase();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = Number(trimmed);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+  }
+
+  let totalSeconds = 0;
+  const regex = /(\d+)\s*(d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes|s|sec|secs|second|seconds)\b/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(trimmed)) !== null) {
+    const value = Number(match[1]);
+    const unit = match[2];
+    if (!Number.isFinite(value) || value <= 0) {
+      continue;
+    }
+
+    if (unit === 'd' || unit === 'day' || unit === 'days') {
+      totalSeconds += value * 86400;
+    } else if (unit === 'h' || unit === 'hr' || unit === 'hrs' || unit === 'hour' || unit === 'hours') {
+      totalSeconds += value * 3600;
+    } else if (unit === 'm' || unit === 'min' || unit === 'mins' || unit === 'minute' || unit === 'minutes') {
+      totalSeconds += value * 60;
+    } else {
+      totalSeconds += value;
+    }
+  }
+
+  return totalSeconds > 0 ? totalSeconds : null;
+};
+
 export class LLMControlPlatform implements DynamicPlatformPlugin {
   private readonly baseConfig?: LLMControlNormalizedConfig;
   private config?: LLMControlNormalizedConfig;
@@ -80,12 +125,17 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
   private automationService?: AutomationService;
   private dailyMonitorTask?: ScheduledTask;
   private watchdogTimer?: NodeJS.Timeout;
+  private scheduledRestartTimer?: NodeJS.Timeout;
+
+  private hbControl?: HomebridgeAccessoryControl;
+  private jobScheduler?: JobScheduler;
 
   private readonly cachedAccessories = new Map<string, PlatformAccessory>();
   private readonly virtualAccessories = new Map<string, PlatformAccessory>();
 
   private ready = false;
   private state: PersistentState = {
+    oneShotJobs: [],
     runtimeConfig: {},
     virtualDevices: [],
     runtimeAutomations: [],
@@ -141,6 +191,8 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       this.stopSchedulers();
       this.telegramService?.stop();
       this.automationService?.stop();
+      this.hbControl?.stop();
+      this.jobScheduler?.stop();
     });
   }
 
@@ -159,7 +211,13 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       this.state.setupHelloSent = false;
     }
 
+    const previousStartupAt = this.state.lastStartupAt;
+    const now = new Date().toISOString();
+    this.state.lastStartupAt = now;
+    await this.persistState();
+
     await this.applyConfigUpdate('startup');
+    await this.maybeSendStartupNotification(previousStartupAt, now);
 
     this.ready = true;
     this.log.info(`[${PLATFORM_NAME}] Plugin started.`);
@@ -278,6 +336,19 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     // Schedulers (daily monitor + watchdog)
     this.startSchedulers();
 
+    // Homebridge accessory control + one-shot jobs
+    this.hbControl?.stop();
+    this.hbControl = undefined;
+    if (nextConfig.homebridgeControl.enabled) {
+      this.hbControl = new HomebridgeAccessoryControl(this.log, this.api, this.api.user.storagePath(), nextConfig.homebridgeControl);
+      this.hbControl.start();
+    }
+
+    if (!this.jobScheduler) {
+      this.jobScheduler = new JobScheduler(this.log);
+    }
+    this.syncOneShotJobs();
+
     // Virtual devices
     this.syncVirtualDevices();
   }
@@ -321,6 +392,14 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
         this.log.info(`[${PLATFORM_NAME}] Watchdog interval set to ${this.config.watchdog.checkIntervalMinutes} minute(s).`);
       }
     }
+
+    if (this.config.operations.scheduledRestartEnabled) {
+      const intervalMs = this.config.operations.restartEveryHours * 60 * 60 * 1000;
+      this.scheduledRestartTimer = setInterval(() => {
+        void this.restartHomebridge(`scheduled restart every ${this.config?.operations.restartEveryHours ?? '?'} hour(s)`);
+      }, intervalMs);
+      this.log.info(`[${PLATFORM_NAME}] Scheduled Homebridge restart every ${this.config.operations.restartEveryHours} hour(s).`);
+    }
   }
 
   private stopSchedulers(): void {
@@ -334,6 +413,121 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       clearInterval(this.watchdogTimer);
       this.watchdogTimer = undefined;
     }
+
+    if (this.scheduledRestartTimer) {
+      clearInterval(this.scheduledRestartTimer);
+      this.scheduledRestartTimer = undefined;
+    }
+  }
+
+  private syncOneShotJobs(): void {
+    if (!this.jobScheduler) {
+      return;
+    }
+
+    this.jobScheduler.sync(
+      () => this.state.oneShotJobs,
+      async (nextJobs) => {
+        this.state.oneShotJobs = nextJobs;
+        await this.persistState();
+      },
+      async (job) => {
+        await this.executeOneShotJob(job);
+      },
+    );
+  }
+
+  private async executeOneShotJob(job: OneShotJob): Promise<void> {
+    if (job.action.type === 'set_hb_entity') {
+      if (!this.hbControl) {
+        throw new Error('Homebridge control is not initialized.');
+      }
+      await this.hbControl.setEntity(job.action.entityId, { on: job.action.on, brightness: job.action.brightness });
+      return;
+    }
+
+    if (job.action.type === 'restart_homebridge') {
+      await this.restartHomebridge(job.action.reason);
+      return;
+    }
+  }
+
+  private async scheduleOneShotJobs(runAt: Date, actions: OneShotJobAction[]): Promise<OneShotJob[]> {
+    if (actions.length === 0) {
+      return [];
+    }
+
+    const createdAt = new Date().toISOString();
+    const jobs: OneShotJob[] = actions.map((action) => ({
+      id: randomUUID(),
+      createdAt,
+      runAt: runAt.toISOString(),
+      action,
+    }));
+
+    this.state.oneShotJobs.push(...jobs);
+    await this.persistState();
+    this.syncOneShotJobs();
+    return jobs;
+  }
+
+  private async scheduleOneShotJob(runAt: Date, action: OneShotJobAction): Promise<OneShotJob> {
+    const jobs = await this.scheduleOneShotJobs(runAt, [action]);
+    return jobs[0];
+  }
+
+  private hbControlStatusText(): string {
+    if (!this.config) {
+      return 'Homebridge control: not initialized';
+    }
+    if (!this.config.homebridgeControl.enabled) {
+      return 'Homebridge control: disabled';
+    }
+    if (!this.hbControl) {
+      return 'Homebridge control: starting...';
+    }
+
+    const last = this.hbControl.getLastRefreshAt();
+    const count = this.hbControl.listEntities().length;
+    return `Homebridge control: enabled | entities: ${count} | last refresh: ${last ?? 'never'}`;
+  }
+
+  private async setHbEntities(
+    entities: HbEntity[],
+    patch: { on?: boolean; brightness?: number },
+  ): Promise<string[]> {
+    if (!this.hbControl) {
+      throw new Error('Homebridge control is not initialized.');
+    }
+
+    const results: string[] = [];
+    for (const entity of entities) {
+      try {
+        const updated = await this.hbControl.setEntity(entity.id, patch);
+        const brightText =
+          updated.type === 'light' && typeof updated.state.brightness === 'number' ? ` (${updated.state.brightness}%)` : '';
+        results.push(`Set ${updated.name}: ${updated.state.on ? 'ON' : 'OFF'}${brightText}`);
+      } catch (error) {
+        results.push(`Failed to set ${entity.name}: ${(error as Error).message}`);
+      }
+    }
+
+    return results;
+  }
+
+  private async scheduleHbEntities(
+    entities: HbEntity[],
+    runAt: Date,
+    patch: { on?: boolean; brightness?: number },
+  ): Promise<OneShotJob[]> {
+    const actions: OneShotJobAction[] = entities.map((entity) => ({
+      type: 'set_hb_entity',
+      entityId: entity.id,
+      on: patch.on,
+      brightness: patch.brightness,
+    }));
+
+    return this.scheduleOneShotJobs(runAt, actions);
   }
 
   private async runWatchdog(): Promise<void> {
@@ -772,8 +966,9 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
         chatId,
         [
           "Provider configured. You're good to go.",
+          'Try: /hb list',
+          "Try saying: 'turn off the lights in 30 minutes'",
           'Try: /health',
-          "To control real lights, create a virtual device with /device add light <name>, then map it to a real accessory using a HomeKit automation.",
         ].join('\n'),
       );
       return true;
@@ -1014,6 +1209,185 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     return 'Usage: /set <id> <on|off> OR /set <id> brightness <0-100>';
   }
 
+  private async handleHbCommand(commandText: string): Promise<string> {
+    if (!this.config) {
+      return 'Config is not initialized yet.';
+    }
+
+    if (!this.config.homebridgeControl.enabled) {
+      return 'Homebridge control is disabled. Enable it with: /config set homebridgeControl.enabled true';
+    }
+
+    if (!this.hbControl) {
+      return 'Homebridge control is starting. Try again in a few seconds.';
+    }
+
+    const args = commandText.split(' ');
+    const op = (args[1] ?? 'help').toLowerCase();
+
+    const allEntities = (): HbEntity[] => this.hbControl?.listEntities() ?? [];
+    const groupEntities = (group: 'lights' | 'switches' | 'outlets' | 'all'): HbEntity[] => {
+      const list = allEntities();
+      if (group === 'all') {
+        return list;
+      }
+      if (group === 'lights') {
+        return list.filter((e) => e.type === 'light');
+      }
+      if (group === 'switches') {
+        return list.filter((e) => e.type === 'switch');
+      }
+      return list.filter((e) => e.type === 'outlet');
+    };
+
+    const parseTargets = (raw: string): HbEntity[] | { group: 'lights' | 'switches' | 'outlets' | 'all' } => {
+      const q = raw.trim().toLowerCase();
+      if (q === 'lights' || q === 'all lights') {
+        return { group: 'lights' };
+      }
+      if (q === 'switches' || q === 'all switches') {
+        return { group: 'switches' };
+      }
+      if (q === 'outlets' || q === 'all outlets') {
+        return { group: 'outlets' };
+      }
+      if (q === 'all') {
+        return { group: 'all' };
+      }
+
+      const exact = this.hbControl?.getEntity(raw.trim());
+      if (exact) {
+        return [exact];
+      }
+
+      return this.hbControl?.listEntities(raw) ?? [];
+    };
+
+    if (op === 'status') {
+      return this.hbControlStatusText();
+    }
+
+    if (op === 'refresh') {
+      await this.hbControl.refresh('manual');
+      return this.hbControlStatusText();
+    }
+
+    if (op === 'list') {
+      const query = commandText.split(' ').slice(2).join(' ').trim();
+      const entities = this.hbControl.listEntities(query);
+      if (entities.length === 0) {
+        return query ? 'No matching entities.' : 'No controllable entities found.';
+      }
+
+      const shown = entities.slice(0, 50);
+      const lines = shown.map((e) => {
+        const state = e.state.on ? 'on' : 'off';
+        const bright = e.type === 'light' && typeof e.state.brightness === 'number' ? ` | ${Math.round(e.state.brightness)}%` : '';
+        return `${e.id} | ${e.type} | ${e.name} | ${state}${bright}`;
+      });
+
+      const more = entities.length > shown.length ? `\n\n(Showing ${shown.length}/${entities.length}. Refine your query.)` : '';
+      return `Entities:\n${lines.join('\n')}${more}`;
+    }
+
+    if (op === 'on' || op === 'off') {
+      const query = commandText.split(' ').slice(2).join(' ').trim();
+      if (!query) {
+        return `Usage: /hb ${op} <query|id|lights|switches|outlets|all>`;
+      }
+
+      const targets = parseTargets(query);
+      const desired = op === 'on';
+
+      if (!Array.isArray(targets)) {
+        const entities = groupEntities(targets.group);
+        const results = await this.setHbEntities(entities, { on: desired });
+        return results.length > 0 ? results.join('\n') : `No entities found for group '${targets.group}'.`;
+      }
+
+      if (targets.length === 0) {
+        return 'No matching entities.';
+      }
+      if (targets.length > 5) {
+        const preview = targets.slice(0, 5).map((e) => `${e.id} | ${e.type} | ${e.name}`).join('\n');
+        return `Matched ${targets.length} entities. Be more specific.\n\n${preview}`;
+      }
+
+      const results = await this.setHbEntities(targets, { on: desired });
+      return results.join('\n');
+    }
+
+    if (op === 'set') {
+      const id = args[2];
+      const sub = (args[3] ?? '').toLowerCase();
+      if (!id || !sub) {
+        return 'Usage: /hb set <id> <on|off> OR /hb set <id> brightness <0-100>';
+      }
+
+      const entity = this.hbControl.getEntity(id);
+      if (!entity) {
+        return 'Entity not found. Use /hb list to find the id.';
+      }
+
+      if (sub === 'on' || sub === 'off') {
+        const results = await this.setHbEntities([entity], { on: sub === 'on' });
+        return results.join('\n');
+      }
+
+      if (sub === 'brightness') {
+        const raw = args[4];
+        const value = raw ? Number(raw) : NaN;
+        if (!Number.isFinite(value)) {
+          return 'Usage: /hb set <id> brightness <0-100>';
+        }
+        const results = await this.setHbEntities([entity], { brightness: value });
+        return results.join('\n');
+      }
+
+      return 'Usage: /hb set <id> <on|off> OR /hb set <id> brightness <0-100>';
+    }
+
+    if (op === 'schedule') {
+      const durationRaw = args[2] ?? '';
+      const desiredRaw = (args[3] ?? '').toLowerCase();
+      const query = commandText.split(' ').slice(4).join(' ').trim();
+
+      const seconds = parseDurationToSeconds(durationRaw);
+      if (!seconds || !['on', 'off'].includes(desiredRaw) || !query) {
+        return 'Usage: /hb schedule <duration> <on|off> <query|id|lights|switches|outlets|all>\nExample: /hb schedule 30m off lights';
+      }
+
+      const targets = parseTargets(query);
+      const desired = desiredRaw === 'on';
+      const runAt = new Date(Date.now() + seconds * 1000);
+
+      if (!Array.isArray(targets)) {
+        const entities = groupEntities(targets.group);
+        const jobs = await this.scheduleHbEntities(entities, runAt, { on: desired });
+        return jobs.length > 0 ? `Scheduled ${jobs.length} job(s) for ${runAt.toISOString()}.` : `No entities found for group '${targets.group}'.`;
+      }
+
+      if (targets.length === 0) {
+        return 'No matching entities.';
+      }
+
+      const jobs = await this.scheduleHbEntities(targets, runAt, { on: desired });
+      return `Scheduled ${jobs.length} job(s) for ${runAt.toISOString()}.`;
+    }
+
+    return [
+      'Homebridge control commands:',
+      '/hb status',
+      '/hb refresh',
+      '/hb list [query]',
+      '/hb on <query|id|lights|switches|outlets|all>',
+      '/hb off <query|id|lights|switches|outlets|all>',
+      '/hb set <id> on|off',
+      '/hb set <id> brightness <0-100>',
+      '/hb schedule <duration> <on|off> <query|id|lights|switches|outlets|all>',
+    ].join('\n');
+  }
+
   private async handleRunCommand(commandText: string): Promise<string> {
     if (!this.config) {
       return 'Config is not initialized yet.';
@@ -1063,27 +1437,49 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       this.lastWatchdogTriggeredAt,
     );
 
-    const devices = this.state.virtualDevices.map((d) => ({
-      id: d.id,
-      name: d.name,
-      type: d.type,
-      on: d.on,
-      brightness: d.type === 'light' ? d.brightness ?? 100 : undefined,
+    const allEntities = this.hbControl?.listEntities() ?? [];
+    const entities = allEntities.slice(0, 200).map((e) => ({
+      id: e.id,
+      name: e.name,
+      type: e.type,
+      on: e.state.on,
+      brightness: e.type === 'light' ? e.state.brightness : undefined,
+      bridge: e.bridge.name,
     }));
 
+    const scheduledJobs = this.state.oneShotJobs
+      .slice()
+      .sort((a, b) => new Date(a.runAt).getTime() - new Date(b.runAt).getTime())
+      .slice(0, 50)
+      .map((job) => ({
+        id: job.id,
+        runAt: job.runAt,
+        action: job.action,
+      }));
+
     const systemPrompt = [
-      'You are a Homebridge assistant with limited actions.',
+      'You are a Homebridge assistant.',
       'Return ONLY valid JSON with this schema:',
-      '{"reply":"string","actions":[{"type":"set_virtual_device","deviceId":"string","on":boolean,"brightness":number?},{"type":"run_health"},{"type":"run_watchdog"}]}',
-      'Only use deviceId values from devices. Never invent ids.',
-      "If the user asks to control a real light, prefer controlling a matching virtual device by name (if present) and explain that a HomeKit automation should mirror it.",
+      '{"reply":"string","actions":[{"type":"refresh_hb"},{"type":"set_hb_entity","entityId":"string","on":boolean,"brightness":number?},{"type":"set_hb_group","group":"all_lights|all_switches|all_outlets|all","on":boolean},{"type":"schedule_set_hb_entity","entityId":"string","delaySeconds":number,"on":boolean,"brightness":number?},{"type":"schedule_set_hb_group","group":"all_lights|all_switches|all_outlets|all","delaySeconds":number,"on":boolean},{"type":"schedule_restart_homebridge","delaySeconds":number,"reason":"string"},{"type":"set_config","path":"string","value":any},{"type":"run_health"},{"type":"run_watchdog"}]}',
+      'Rules:',
+      '- Only use entityId values from entities. Never invent ids.',
+      '- If multiple devices could match, ask a clarifying question and do not take action.',
+      '- For restarts, prefer scheduling a restart a few seconds in the future (delaySeconds >= 3).',
+      '- Never output secrets.',
     ].join(' ');
 
     const userPrompt = JSON.stringify(
       {
         message: text,
         snapshot,
-        devices,
+        homebridgeControl: {
+          enabled: this.config?.homebridgeControl.enabled ?? false,
+          lastRefreshAt: this.hbControl?.getLastRefreshAt(),
+          entitiesCount: allEntities.length,
+        },
+        entities,
+        scheduledJobs,
+        allowedConfigPaths: Array.from(ALLOWED_RUNTIME_CONFIG_PATHS).sort(),
       },
       null,
       2,
@@ -1110,21 +1506,132 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
         continue;
       }
 
-      if (action.type === 'set_virtual_device') {
-        const deviceId = typeof action.deviceId === 'string' ? action.deviceId : '';
+      if (action.type === 'refresh_hb') {
+        if (!this.hbControl) {
+          actionResults.push('Homebridge control is not initialized.');
+          continue;
+        }
+        await this.hbControl.refresh('assistant');
+        actionResults.push(this.hbControlStatusText());
+        continue;
+      }
+
+      if (action.type === 'set_hb_entity') {
+        const entityId = typeof action.entityId === 'string' ? action.entityId : '';
         const on = typeof action.on === 'boolean' ? action.on : undefined;
         const brightness = typeof action.brightness === 'number' ? action.brightness : undefined;
-        if (!deviceId || on === undefined) {
+        if (!this.hbControl || !entityId || on === undefined) {
           continue;
         }
 
+        const entity = this.hbControl.getEntity(entityId);
+        if (!entity) {
+          continue;
+        }
+
+        const results = await this.setHbEntities([entity], { on, brightness });
+        actionResults.push(results.join('\n'));
+        continue;
+      }
+
+      if (action.type === 'set_hb_group') {
+        const group = typeof action.group === 'string' ? action.group : '';
+        const on = typeof action.on === 'boolean' ? action.on : undefined;
+        if (!this.hbControl || !group || on === undefined) {
+          continue;
+        }
+
+        const list = this.hbControl.listEntities();
+        const targets =
+          group === 'all_lights'
+            ? list.filter((e) => e.type === 'light')
+            : group === 'all_switches'
+              ? list.filter((e) => e.type === 'switch')
+              : group === 'all_outlets'
+                ? list.filter((e) => e.type === 'outlet')
+                : group === 'all'
+                  ? list
+                  : [];
+
+        const results = await this.setHbEntities(targets, { on });
+        actionResults.push(results.length > 0 ? results.join('\n') : `No entities in group ${group}.`);
+        continue;
+      }
+
+      if (action.type === 'schedule_set_hb_entity') {
+        const entityId = typeof action.entityId === 'string' ? action.entityId : '';
+        const on = typeof action.on === 'boolean' ? action.on : undefined;
+        const brightness = typeof action.brightness === 'number' ? action.brightness : undefined;
+        const delaySeconds = typeof action.delaySeconds === 'number' ? action.delaySeconds : undefined;
+        if (!this.hbControl || !entityId || on === undefined || !delaySeconds || delaySeconds <= 0) {
+          continue;
+        }
+
+        const entity = this.hbControl.getEntity(entityId);
+        if (!entity) {
+          continue;
+        }
+
+        const runAt = new Date(Date.now() + Math.round(delaySeconds) * 1000);
+        await this.scheduleOneShotJob(runAt, { type: 'set_hb_entity', entityId, on, brightness });
+        actionResults.push(`Scheduled ${entity.name} for ${runAt.toISOString()}.`);
+        continue;
+      }
+
+      if (action.type === 'schedule_set_hb_group') {
+        const group = typeof action.group === 'string' ? action.group : '';
+        const on = typeof action.on === 'boolean' ? action.on : undefined;
+        const delaySeconds = typeof action.delaySeconds === 'number' ? action.delaySeconds : undefined;
+        if (!this.hbControl || !group || on === undefined || !delaySeconds || delaySeconds <= 0) {
+          continue;
+        }
+
+        const list = this.hbControl.listEntities();
+        const targets =
+          group === 'all_lights'
+            ? list.filter((e) => e.type === 'light')
+            : group === 'all_switches'
+              ? list.filter((e) => e.type === 'switch')
+              : group === 'all_outlets'
+                ? list.filter((e) => e.type === 'outlet')
+                : group === 'all'
+                  ? list
+                  : [];
+
+        const runAt = new Date(Date.now() + Math.round(delaySeconds) * 1000);
+        await this.scheduleHbEntities(targets, runAt, { on });
+        actionResults.push(`Scheduled ${targets.length} device(s) for ${runAt.toISOString()}.`);
+        continue;
+      }
+
+      if (action.type === 'schedule_restart_homebridge') {
+        const delaySeconds = typeof action.delaySeconds === 'number' ? action.delaySeconds : undefined;
+        const reason = typeof action.reason === 'string' ? action.reason : '';
+        if (!delaySeconds || delaySeconds <= 0 || !reason) {
+          continue;
+        }
+        const runAt = new Date(Date.now() + Math.round(delaySeconds) * 1000);
+        await this.scheduleOneShotJob(runAt, { type: 'restart_homebridge', reason });
+        actionResults.push(`Scheduled Homebridge restart for ${runAt.toISOString()}.`);
+        continue;
+      }
+
+      if (action.type === 'set_config') {
+        const pathStr = typeof action.path === 'string' ? action.path : '';
+        if (!pathStr || !ALLOWED_RUNTIME_CONFIG_PATHS.has(pathStr)) {
+          continue;
+        }
+
+        const nextRuntime = (globalThis as unknown as { structuredClone?: <V>(input: V) => V }).structuredClone
+          ? structuredClone(this.state.runtimeConfig)
+          : (JSON.parse(JSON.stringify(this.state.runtimeConfig)) as Record<string, unknown>);
+
         try {
-          const updated = await this.setVirtualDeviceState(deviceId, { on, brightness });
-          const brightText =
-            updated.type === 'light' && typeof updated.brightness === 'number' ? ` (${updated.brightness}%)` : '';
-          actionResults.push(`Set ${updated.name}: ${updated.on ? 'ON' : 'OFF'}${brightText}`);
+          setAtPath(nextRuntime, pathStr.split('.').filter(Boolean), action.value);
+          await this.commitRuntimeConfig(nextRuntime, `assistant:${pathStr}`);
+          actionResults.push(`Updated ${pathStr}.`);
         } catch (error) {
-          actionResults.push(`Failed to set device ${deviceId}: ${(error as Error).message}`);
+          actionResults.push(`Failed to update ${pathStr}: ${(error as Error).message}`);
         }
         continue;
       }
@@ -1246,10 +1753,19 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     }
 
     if (trimmed === '/status') {
-      await this.telegramService.sendMessage(
-        chatId,
-        `Linked chat: ${this.state.linkedChatId}\\nPairing mode: ${this.config.messaging.pairingMode}`,
-      );
+      const llm = this.llmClient ? 'configured' : 'not configured';
+      const restartStatus = this.config.operations.scheduledRestartEnabled
+        ? `enabled (every ${this.config.operations.restartEveryHours}h)`
+        : 'disabled';
+
+      await this.telegramService.sendMessage(chatId, [
+        `Linked chat: ${this.state.linkedChatId}`,
+        `Pairing mode: ${this.config.messaging.pairingMode}`,
+        `LLM provider: ${llm}`,
+        this.hbControlStatusText(),
+        `Scheduled restart: ${restartStatus}`,
+        `Scheduled jobs: ${this.state.oneShotJobs.length}`,
+      ].join('\n'));
       return;
     }
 
@@ -1286,21 +1802,31 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       return;
     }
 
+    if (trimmed === '/hb' || trimmed.startsWith('/hb ')) {
+      const response = await this.handleHbCommand(trimmed);
+      await this.telegramService.sendMessage(chatId, response);
+      return;
+    }
+
+    if (trimmed === '/jobs' || trimmed.startsWith('/jobs ')) {
+      const response = await this.handleJobsCommand(trimmed);
+      await this.telegramService.sendMessage(chatId, response);
+      return;
+    }
+
     if (trimmed === '/devices') {
-      const response = await this.handleDeviceCommand('/device list');
+      const response = await this.handleHbCommand('/hb list');
       await this.telegramService.sendMessage(chatId, response);
       return;
     }
 
     if (trimmed.startsWith('/device')) {
-      const response = await this.handleDeviceCommand(trimmed);
-      await this.telegramService.sendMessage(chatId, response);
+      await this.telegramService.sendMessage(chatId, `Virtual devices are deprecated. Use /hb list, /hb on, /hb off, /hb schedule.`);
       return;
     }
 
     if (trimmed.startsWith('/set ')) {
-      const response = await this.handleSetCommand(trimmed);
-      await this.telegramService.sendMessage(chatId, response);
+      await this.telegramService.sendMessage(chatId, `Use /hb set <id> on|off or /hb set <id> brightness <0-100>.`);
       return;
     }
 
@@ -1410,6 +1936,71 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     return 'Automation commands: list, add, remove, toggle';
   }
 
+  private async handleJobsCommand(commandText: string): Promise<string> {
+    const args = commandText.split(' ');
+    const op = args[1] ?? 'help';
+
+    if (op === 'list') {
+      if (this.state.oneShotJobs.length === 0) {
+        return 'No scheduled jobs.';
+      }
+
+      const jobs = this.state.oneShotJobs
+        .slice()
+        .sort((a, b) => new Date(a.runAt).getTime() - new Date(b.runAt).getTime());
+
+      const lines = jobs.map((job) => {
+        const runAtMs = Date.parse(job.runAt);
+        const inMinutes = Number.isFinite(runAtMs) ? Math.max(0, Math.round((runAtMs - Date.now()) / 60000)) : undefined;
+
+        if (job.action.type === 'set_hb_entity') {
+          const entity = this.hbControl?.getEntity(job.action.entityId);
+          const target = entity ? `${entity.name}` : job.action.entityId;
+          const state = typeof job.action.on === 'boolean' ? (job.action.on ? 'ON' : 'OFF') : 'UNCHANGED';
+          const bright =
+            typeof job.action.brightness === 'number' ? ` | ${Math.round(job.action.brightness)}%` : '';
+          const rel = typeof inMinutes === 'number' ? ` (in ${inMinutes}m)` : '';
+          return `${job.id} | ${job.runAt}${rel} | set ${target}: ${state}${bright}`;
+        }
+
+        if (job.action.type === 'restart_homebridge') {
+          const rel = typeof inMinutes === 'number' ? ` (in ${inMinutes}m)` : '';
+          return `${job.id} | ${job.runAt}${rel} | restart Homebridge (${job.action.reason})`;
+        }
+
+        return `${job.id} | ${job.runAt} | unknown`;
+      });
+
+      return `Scheduled jobs:\n${lines.join('\n')}`;
+    }
+
+    if (op === 'cancel') {
+      const id = args[2];
+      if (!id) {
+        return 'Usage: /jobs cancel <jobId>';
+      }
+
+      const index = this.state.oneShotJobs.findIndex((j) => j.id === id);
+      if (index === -1) {
+        return 'Job not found.';
+      }
+
+      this.state.oneShotJobs.splice(index, 1);
+      await this.persistState();
+      this.syncOneShotJobs();
+      return `Cancelled job ${id}.`;
+    }
+
+    if (op === 'clear') {
+      this.state.oneShotJobs = [];
+      await this.persistState();
+      this.syncOneShotJobs();
+      return 'Cleared all scheduled jobs.';
+    }
+
+    return ['Job commands:', '/jobs list', '/jobs cancel <jobId>', '/jobs clear'].join('\n');
+  }
+
   private async answerQuestion(question: string): Promise<string> {
     if (!this.healthService || !this.automationService) {
       throw new Error('Plugin runtime is not initialized');
@@ -1440,6 +2031,41 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     );
 
     return this.llmClient.askQuestion(systemPrompt, userPrompt);
+  }
+
+  private async maybeSendStartupNotification(previousStartupAt: string | undefined, now: string): Promise<void> {
+    if (!this.config) {
+      return;
+    }
+    if (!this.config.operations.notifyOnHomebridgeStartup && !this.config.operations.notifyOnHomebridgeRestart) {
+      return;
+    }
+    if (!this.telegramService || !this.state.linkedChatId) {
+      return;
+    }
+
+    if (!previousStartupAt) {
+      if (!this.config.operations.notifyOnHomebridgeStartup) {
+        return;
+      }
+      await this.sendNotification(`Homebridge started at ${now}.`);
+      return;
+    }
+
+    if (!this.config.operations.notifyOnHomebridgeRestart) {
+      return;
+    }
+    await this.sendNotification(`Homebridge restarted at ${now}. Previous start was ${previousStartupAt}.`);
+  }
+
+  private async restartHomebridge(reason: string): Promise<void> {
+    this.log.warn(`[${PLATFORM_NAME}] Restarting Homebridge (${reason}).`);
+    await this.sendNotification(`Restarting Homebridge now (${reason}).`);
+
+    // Give the notification a moment to leave the process before shutdown.
+    await new Promise<void>((resolve) => setTimeout(resolve, 750));
+
+    process.kill(process.pid, 'SIGTERM');
   }
 
   private async sendNotification(message: string): Promise<void> {
@@ -1486,18 +2112,19 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       '/setup - Guided LLM provider setup',
       '/cancel - Cancel a guided setup',
       '/help - Show this message',
+      '/hb - Homebridge device control help',
+      '/hb list [query] - List controllable devices',
+      '/hb on <query|id|lights|switches|outlets|all>',
+      '/hb off <query|id|lights|switches|outlets|all>',
+      '/hb schedule <duration> <on|off> <query|id|lights|switches|outlets|all>',
+      '/jobs list - List scheduled one-shot jobs',
+      '/jobs cancel <jobId> - Cancel a scheduled job',
       '/health - Run health analysis now',
       '/watchdog - Trigger watchdog investigation',
       '/ask <question> - Ask about Homebridge state',
       '/config - View/modify runtime config',
       '/commands - List self-healing command IDs',
       '/run <commandId> - Run an allowed self-healing command',
-      '/devices - List virtual devices',
-      '/device add <switch|light> <name>',
-      '/device remove <id>',
-      '/device rename <id> <new name>',
-      '/set <id> <on|off>',
-      '/set <id> brightness <0-100>',
       '/automation list',
       '/automation add <name> | <cron> | <prompt>',
       '/automation remove <id>',

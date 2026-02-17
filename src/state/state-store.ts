@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Logger } from 'homebridge';
+import type { OneShotJob } from '../scheduler/job-scheduler';
 
 type RuntimeAutomation = {
   id: string;
@@ -24,8 +25,10 @@ export type PersistentState = {
   onboardingCode?: string;
   linkedChatId?: string;
   setupHelloSent?: boolean;
+  lastStartupAt?: string;
   runtimeConfig: Record<string, unknown>;
   virtualDevices: VirtualDevice[];
+  oneShotJobs: OneShotJob[];
   runtimeAutomations: RuntimeAutomation[];
   commandCooldowns: Record<string, string>;
   actionQuota: {
@@ -37,6 +40,7 @@ export type PersistentState = {
 const defaultState = (): PersistentState => ({
   runtimeConfig: {},
   virtualDevices: [],
+  oneShotJobs: [],
   runtimeAutomations: [],
   commandCooldowns: {},
   setupHelloSent: false,
@@ -48,6 +52,62 @@ const defaultState = (): PersistentState => ({
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+
+const sanitizeOneShotJobs = (value: unknown): OneShotJob[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const result: OneShotJob[] = [];
+  for (const item of value) {
+    if (!isPlainObject(item)) {
+      continue;
+    }
+    const id = typeof item.id === 'string' ? item.id : '';
+    const createdAt = typeof item.createdAt === 'string' ? item.createdAt : '';
+    const runAt = typeof item.runAt === 'string' ? item.runAt : '';
+    const actionRaw = isPlainObject(item.action) ? item.action : undefined;
+    const type = typeof actionRaw?.type === 'string' ? actionRaw.type : '';
+
+    if (!id || !createdAt || !runAt || !actionRaw || !type) {
+      continue;
+    }
+
+    if (type === 'set_hb_entity') {
+      const entityId = typeof actionRaw.entityId === 'string' ? actionRaw.entityId : '';
+      const on = typeof actionRaw.on === 'boolean' ? actionRaw.on : undefined;
+      const brightness = typeof actionRaw.brightness === 'number' && Number.isFinite(actionRaw.brightness) ? actionRaw.brightness : undefined;
+      if (!entityId) {
+        continue;
+      }
+      result.push({
+        id,
+        createdAt,
+        runAt,
+        action: { type, entityId, on, brightness },
+      });
+      continue;
+    }
+
+    if (type === 'restart_homebridge') {
+      const reason = typeof actionRaw.reason === 'string' ? actionRaw.reason : '';
+      if (!reason) {
+        continue;
+      }
+      result.push({
+        id,
+        createdAt,
+        runAt,
+        action: { type, reason },
+      });
+      continue;
+    }
+
+    // Unknown action type.
+    continue;
+  }
+  return result;
+};
 
 const sanitizeVirtualDevices = (value: unknown): VirtualDevice[] => {
   if (!Array.isArray(value)) {
@@ -96,8 +156,10 @@ export class StateStore {
         onboardingCode: parsed.onboardingCode,
         linkedChatId: parsed.linkedChatId,
         setupHelloSent: parsed.setupHelloSent ?? false,
+        lastStartupAt: typeof parsed.lastStartupAt === 'string' ? parsed.lastStartupAt : undefined,
         runtimeConfig: isPlainObject(parsed.runtimeConfig) ? parsed.runtimeConfig : {},
         virtualDevices: sanitizeVirtualDevices(parsed.virtualDevices),
+        oneShotJobs: sanitizeOneShotJobs(parsed.oneShotJobs),
         runtimeAutomations: Array.isArray(parsed.runtimeAutomations) ? parsed.runtimeAutomations : [],
         commandCooldowns: parsed.commandCooldowns ?? {},
         actionQuota: parsed.actionQuota ?? defaultState().actionQuota,

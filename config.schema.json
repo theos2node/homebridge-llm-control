@@ -2,8 +2,8 @@
   "pluginAlias": "LLMControl",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Homebridge LLM Control lets you connect an LLM (OpenAI or compatible), use Telegram for chat/onboarding, run daily monitoring, watchdog checks, and safe self-healing actions.\\n\\nTelegram quick setup:\\n1) Create a bot with @BotFather and copy the bot token\\n2) Paste the token below (Telegram auto-enables)\\n3) Pairing mode: Auto-link first chat (easiest) then send any message to your bot\\n4) In Telegram, run /setup to configure your LLM API key + model from chat",
-  "footerDisplay": "Security note: use least-privilege API keys and only whitelist trusted self-healing commands.",
+  "headerDisplay": "Homebridge LLM Control adds Telegram chat control for your existing Homebridge accessories, plus LLM-powered monitoring, watchdog checks, and safe self-healing actions.\\n\\nTelegram quick setup:\\n1) Create a bot with @BotFather and copy the bot token\\n2) Paste the token below (Telegram auto-enables)\\n3) Pairing mode: Auto-link first chat (easiest) then send any message to your bot\\n4) In Telegram, run /setup to configure your LLM API key + model from chat\\n5) Use /hb list (or just type: turn off the lights in 30 minutes)",
+  "footerDisplay": "Security note: use least-privilege API keys and only whitelist trusted self-healing commands. Accessory control uses Homebridge's local HAP HTTP endpoints (requires Homebridge to run with -I).",
   "schema": {
     "type": "object",
     "properties": {
@@ -167,6 +167,58 @@
             "default": 300,
             "minimum": 50,
             "maximum": 5000
+          }
+        }
+      },
+      "homebridgeControl": {
+        "type": "object",
+        "title": "Homebridge Control",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enable Direct Homebridge Control",
+            "default": true,
+            "description": "Allows Telegram to control existing Homebridge accessories (no Home app automations required)."
+          },
+          "includeChildBridges": {
+            "type": "boolean",
+            "title": "Include Child Bridges",
+            "default": true
+          },
+          "refreshIntervalSeconds": {
+            "type": "integer",
+            "title": "Accessory Refresh Interval (seconds)",
+            "default": 60,
+            "minimum": 10,
+            "maximum": 3600
+          }
+        }
+      },
+      "operations": {
+        "type": "object",
+        "title": "Operations",
+        "properties": {
+          "scheduledRestartEnabled": {
+            "type": "boolean",
+            "title": "Enable Scheduled Homebridge Restart",
+            "default": false
+          },
+          "restartEveryHours": {
+            "type": "integer",
+            "title": "Restart Every (hours)",
+            "default": 12,
+            "minimum": 1,
+            "maximum": 168
+          },
+          "notifyOnHomebridgeStartup": {
+            "type": "boolean",
+            "title": "Notify On Homebridge Startup",
+            "default": false
+          },
+          "notifyOnHomebridgeRestart": {
+            "type": "boolean",
+            "title": "Notify On Homebridge Restart",
+            "default": true
           }
         }
       },
@@ -359,6 +411,36 @@
           "key": "monitoring.maxLogLines",
           "condition": "model.monitoring && model.monitoring.includeLogs"
         }
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Homebridge Control",
+      "expandable": true,
+      "items": [
+        "homebridgeControl.enabled",
+        {
+          "key": "homebridgeControl.includeChildBridges",
+          "condition": "model.homebridgeControl && model.homebridgeControl.enabled"
+        },
+        {
+          "key": "homebridgeControl.refreshIntervalSeconds",
+          "condition": "model.homebridgeControl && model.homebridgeControl.enabled"
+        }
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Operations",
+      "expandable": true,
+      "items": [
+        "operations.scheduledRestartEnabled",
+        {
+          "key": "operations.restartEveryHours",
+          "condition": "model.operations && model.operations.scheduledRestartEnabled"
+        },
+        "operations.notifyOnHomebridgeStartup",
+        "operations.notifyOnHomebridgeRestart"
       ]
     },
     {

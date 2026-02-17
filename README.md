@@ -4,6 +4,9 @@ LLM-powered operations plugin for Homebridge with:
 
 - LLM provider presets (`OpenAI` + custom OpenAI-compatible endpoint)
 - Telegram onboarding + chat control
+- Direct control of existing Homebridge accessories (lights/switches/outlets) from Telegram
+- One-shot scheduling ("turn off the lights in 30 minutes")
+- Optional scheduled Homebridge restarts + restart notifications
 - Daily health monitoring
 - Watchdog checks for critical signals
 - Guardrailed self-healing commands (allowlist + cooldown + daily quota)
@@ -70,6 +73,17 @@ Full example:
     "pairingMode": "first_message",
     "pollIntervalMs": 2000
   },
+  "homebridgeControl": {
+    "enabled": true,
+    "includeChildBridges": true,
+    "refreshIntervalSeconds": 60
+  },
+  "operations": {
+    "scheduledRestartEnabled": false,
+    "restartEveryHours": 12,
+    "notifyOnHomebridgeStartup": false,
+    "notifyOnHomebridgeRestart": true
+  },
   "monitoring": {
     "dailyMonitoringEnabled": true,
     "dailyMonitoringTime": "09:00",
@@ -125,6 +139,13 @@ Full example:
 - `/help`
 - `/setup`
 - `/cancel`
+- `/hb` (device control help)
+- `/hb list [query]`
+- `/hb on <query|id|lights|switches|outlets|all>`
+- `/hb off <query|id|lights|switches|outlets|all>`
+- `/hb schedule <duration> <on|off> <query|id|lights|switches|outlets|all>`
+- `/jobs list`
+- `/jobs cancel <jobId>`
 - `/health`
 - `/watchdog`
 - `/ask <question>`
@@ -135,24 +156,19 @@ Full example:
 - `/automation add <name> | <cron> | <prompt>`
 - `/automation remove <id>`
 - `/automation toggle <id> <on|off>`
-- `/devices`
-- `/device add <switch|light> <name>`
-- `/device remove <id>`
-- `/device rename <id> <new name>`
-- `/set <id> <on|off>`
-- `/set <id> brightness <0-100>`
 
 ## Controlling lights and devices
 
-Homebridge runs many plugins in separate child bridge processes. A plugin can’t reliably “reach into” other child bridges to directly toggle their accessories.
+This plugin controls your existing Homebridge accessories directly via Homebridge's local HAP HTTP endpoints (in insecure mode).
 
-This plugin provides **virtual HomeKit devices** you can control from Telegram. Then you mirror them to real accessories using HomeKit automations:
+Quick start:
 
-1. Create a virtual device from chat, for example: `/device add light Kitchen Light`
-2. In the Home app, create an automation:
-   - “When Kitchen Light is controlled…”
-   - Set your real light accessory to match
-3. Now you can message your bot things like “turn on kitchen light” (LLM configured) or use `/set <id> on`
+1. Configure Telegram and link the chat.
+2. In Telegram, run: `/hb list`
+3. Turn something off: `/hb off <query>` (example: `/hb off floor lamp`)
+4. Schedule an action: `/hb schedule 30m off lights`
+
+Tip: once your LLM provider is configured, you can also just type: "turn off the lights in 30 minutes".
 
 ## Safety model
 

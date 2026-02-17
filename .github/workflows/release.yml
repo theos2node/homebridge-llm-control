@@ -37,6 +37,11 @@ jobs:
 
           echo "Package: ${PKG_NAME}@${PKG_VERSION}"
 
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN (NODE_AUTH_TOKEN) is not configured in GitHub secrets; skipping publish."
+            exit 0
+          fi
+
           if npm view "${PKG_NAME}@${PKG_VERSION}" version --registry https://registry.npmjs.org/ >/dev/null 2>&1; then
             echo "Already published on npm; skipping publish."
             exit 0
