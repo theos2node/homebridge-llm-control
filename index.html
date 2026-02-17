@@ -6,7 +6,7 @@
     <title>Homebridge LLM Control</title>
     <meta
       name="description"
-      content="Chat + LLM operations for Homebridge: control existing accessories, schedule actions, monitor health, and run guardrailed self-healing skills."
+      content="Chat with Homebridge using an LLM: control what Homebridge already exposes, schedule actions, monitor health, and run guardrailed skills."
     />
     <link rel="stylesheet" href="style.css" />
   </head>
@@ -14,17 +14,17 @@
     <div class="wrap">
       <div class="header">
         <h1>Homebridge LLM Control</h1>
-        <div class="tagline">Chat + LLM operations for Homebridge (no Home app automations required)</div>
+        <div class="tagline">An LLM chat control plane for Homebridge (no Home app automations required)</div>
       </div>
 
       <div class="nav">
         <a href="#what">What</a>
         <span class="sep">|</span>
-        <a href="#quickstart">Quickstart</a>
+        <a href="#setup">Setup</a>
         <span class="sep">|</span>
-        <a href="#examples">Examples</a>
+        <a href="#talk">Talk To It</a>
         <span class="sep">|</span>
-        <a href="#safety">Safety</a>
+        <a href="#recipes">Recipes</a>
         <span class="sep">|</span>
         <a href="#links">Links</a>
       </div>
@@ -33,127 +33,123 @@
         <h2 id="what">What This Plugin Does</h2>
 
         <ul>
-          <li>Control existing Homebridge accessories (lights/switches/outlets) from chat</li>
-          <li>Schedule one-shot actions ("turn off the lights in 30 minutes")</li>
-          <li>LLM-powered health checks, daily monitoring, and watchdog investigations</li>
-          <li>Guardrailed self-healing commands and chat-managed runtime skills</li>
-          <li>Messaging options: Telegram, ntfy (two-way), Discord webhook (notifications only)</li>
+          <li>Lets you message Homebridge like a person and get things done</li>
+          <li>Controls what Homebridge already exposes (lights, switches, outlets, etc.)</li>
+          <li>Schedules one-shot actions (like “turn off all lights in 30 minutes”)</li>
+          <li>Runs health checks, daily monitoring, and watchdog investigations</li>
+          <li>Can run guardrailed “skills” (approved shell commands) when needed</li>
+          <li>Chat options: ntfy + Telegram (two-way) and Discord webhook (notifications)</li>
         </ul>
 
         <div class="note">
-          <strong>Important:</strong> this plugin can only control devices that are <em>present in Homebridge</em>.
-          If a device is only in the iOS Home app (native HomeKit) and not exposed via a Homebridge plugin, it will
-          not appear here.
+          <strong>Important reality check:</strong> this plugin can only control devices that are <em>present in
+          Homebridge</em>. If something only exists in the iOS Home app (native HomeKit) and is not exposed through a
+          Homebridge plugin, it will not appear here.
+        </div>
+
+        <div class="note">
+          If your “real” devices live only in HomeKit, you can add a HomeKit-to-Homebridge bridge.
+          One option: <a href="https://github.com/minamoanes/homebridge-homekit-control">homebridge-homekit-control</a>
+          (use carefully: importing devices can create duplicates and can confuse your Home app if you already have the
+          same devices bridged elsewhere).
         </div>
       </div>
 
       <div class="box">
-        <h2 id="quickstart">Quickstart</h2>
+        <h2 id="setup">Setup (Fast)</h2>
 
-        <table class="setup" cellspacing="0" cellpadding="10">
-          <tr>
-            <th width="220">Option</th>
-            <th>How To Set It Up</th>
-          </tr>
-          <tr>
-            <td class="setup-title">
-              <strong>ntfy</strong> (recommended)<br />
-              <span class="small">Easiest onboarding</span>
-            </td>
-            <td>
-              <ol>
-                <li>Enable <code>ntfy.enabled</code> in Homebridge UI for this plugin</li>
-                <li>Leave <code>ntfy.topic</code> blank (it will auto-generate)</li>
-                <li>Restart Homebridge</li>
-                <li>Install the ntfy app (iOS/Android) and subscribe to the topic shown in <code>/status</code> or Homebridge logs</li>
-                <li>Send: <code>/hb list</code></li>
-              </ol>
-            </td>
-          </tr>
-          <tr>
-            <td class="setup-title">
-              <strong>Telegram</strong><br />
-              <span class="small">Two-way chat</span>
-            </td>
-            <td>
-              <ol>
-                <li>Create a bot with <code>@BotFather</code></li>
-                <li>Paste the bot token into the plugin settings</li>
-                <li>Use pairing mode <em>Auto-link first chat</em> (easiest) and send any message to your bot</li>
-                <li>In Telegram: run <code>/setup</code> to configure your LLM provider (API key + model)</li>
-              </ol>
-            </td>
-          </tr>
-          <tr>
-            <td class="setup-title">
-              <strong>Discord webhook</strong><br />
-              <span class="small">Notifications only</span>
-            </td>
-            <td>
-              <ol>
-                <li>Create a webhook in your Discord channel</li>
-                <li>Paste it into <code>discordWebhook.webhookUrl</code></li>
-                <li>Restart Homebridge and watch for the "online" notification</li>
-              </ol>
-            </td>
-          </tr>
-        </table>
+        <p>
+          Install the plugin, pick a chat channel, restart Homebridge, then talk to it. That’s it.
+        </p>
+
+        <ul>
+          <li><strong>ntfy (recommended):</strong> enable ntfy, restart, subscribe to the topic shown in <code>/status</code></li>
+          <li><strong>Telegram:</strong> create a bot token, enable Telegram, restart, message the bot</li>
+          <li><strong>Discord webhook:</strong> paste webhook URL for notifications (not interactive chat)</li>
+        </ul>
+
+        <p class="small">
+          First message after a restart should be: “Hey it’s set up. Homebridge LLM Control is online.”
+        </p>
       </div>
 
       <div class="box">
-        <h2 id="examples">Example Commands & Scenarios</h2>
+        <h2 id="talk">Talk To It (Natural Language)</h2>
 
-        <h3>Discover Devices</h3>
-        <pre><code>/hb status
-/hb refresh
+        <p>These are good first messages to send:</p>
+
+        <pre><code>What devices can you control right now?
+Turn off all the lights.
+Turn on all the lights at 30% brightness.
+Turn off everything in 30 minutes.
+
+Is Homebridge healthy? Anything broken?
+What changed in the logs today?</code></pre>
+
+        <h3>If You Like Commands</h3>
+        <pre><code>/help
+/status
+
 /hb list
-/hb list lamp</code></pre>
-
-        <h3>Turn Things On/Off</h3>
-        <pre><code>/hb on lights
+/hb on lights
 /hb off lights
-/hb on switches
-/hb off outlets
+/hb schedule 30m off lights
 
-# direct (LLM can do this too once configured)
-turn off all the lights
-turn on all the lights</code></pre>
+/health
+/watchdog</code></pre>
 
-        <h3>Schedule Actions</h3>
-        <pre><code>/hb schedule 30m off lights
+        <h3>Common “Why Can’t You See My Devices?”</h3>
+        <ul>
+          <li>If <code>/hb list</code> looks empty, it’s not an LLM problem: Homebridge itself isn’t exposing those devices.</li>
+          <li>Fix is to add/configure the right Homebridge plugins so the devices show up in Homebridge.</li>
+          <li>If those devices are only in HomeKit, see the HomeKit import option above.</li>
+        </ul>
+      </div>
 
-# natural language
-turn off all the lights in 30 minutes</code></pre>
+      <div class="box">
+        <h2 id="recipes">Recipes (Useful Stuff)</h2>
 
-        <h3>Health, Monitoring, Watchdog</h3>
-        <pre><code>/health
-/watchdog
+        <h3>One-Shot Schedules</h3>
+        <pre><code>Turn off all the lights in 20 minutes.
+Restart Homebridge in 2 hours.</code></pre>
 
-# enable daily monitoring at 9am
-/config set monitoring.dailyMonitoringEnabled true
-/config set monitoring.dailyMonitoringTime 09:00</code></pre>
+        <h3>Recurring Automations (LLM-Driven)</h3>
+        <p class="small">
+          Runtime automations live inside this plugin. They are cron-based and can be created/removed in chat.
+        </p>
+        <pre><code>/automation list
+/automation add Nightly lights off | 0 1 * * * | Turn off all lights and switches.
+/automation add Morning check | 0 8 * * * | Give me a short health report and highlight anything unusual.
+/automation toggle &lt;id&gt; off
+/automation remove &lt;id&gt;</code></pre>
 
-        <h3>Log Signals (Optional)</h3>
-        <pre><code>/config set monitoring.includeLogs true
-/config set monitoring.logFilePath /var/lib/homebridge/homebridge.log
-/health</code></pre>
+        <h3>Daily Monitoring + Watchdog</h3>
+        <pre><code>Enable daily monitoring at 9:00am.
+Enable the watchdog. If there is a critical error, investigate and notify me.</code></pre>
+        <pre><code>/config set monitoring.dailyMonitoringEnabled true
+/config set monitoring.dailyMonitoringTime 09:00
+/config set watchdog.enabled true</code></pre>
 
-        <h3>Skills (Safe Shell Command Allowlist)</h3>
+        <h3>“Restart Homebridge Every 12 Hours”</h3>
+        <pre><code>Restart Homebridge every 12 hours and notify me when it restarts.</code></pre>
+        <pre><code>/config set operations.scheduledRestartEnabled true
+/config set operations.restartEveryHours 12
+/config set operations.notifyOnHomebridgeRestart true</code></pre>
+
+        <h3>One-Off Scripts (Guardrailed Skills)</h3>
+        <p class="small">
+          Skills are approved shell commands. They’re how you do powerful one-offs without giving an LLM unlimited shell
+          access.
+        </p>
         <pre><code>/skills
 /skill propose Restart Homebridge | sudo hb-service restart | 60
 /skill pending
 /skill approve &lt;proposalId&gt; yes
 /run &lt;skillId&gt;</code></pre>
-      </div>
 
-      <div class="box">
-        <h2 id="safety">Safety Notes</h2>
-        <ul>
-          <li>LLM can control only the accessories discovered from Homebridge.</li>
-          <li>Shell commands run only from an allowlist (config commands + approved runtime skills).</li>
-          <li>Cooldowns and daily quotas prevent runaway self-healing.</li>
-          <li>Keep your messaging tokens private; treat your chat channel as root access.</li>
-        </ul>
+        <div class="note">
+          Safety: skills run only from an allowlist, with cooldowns/quotas. Your chat token is effectively admin access.
+        </div>
       </div>
 
       <div class="box">
@@ -161,15 +157,15 @@ turn off all the lights in 30 minutes</code></pre>
         <ul>
           <li>GitHub repo: <a href="https://github.com/theos2node/homebridge-llm-control">theos2node/homebridge-llm-control</a></li>
           <li>npm package: <a href="https://www.npmjs.com/package/homebridge-llm-control">homebridge-llm-control</a></li>
+          <li>HomeKit import (optional): <a href="https://github.com/minamoanes/homebridge-homekit-control">minamoanes/homebridge-homekit-control</a></li>
         </ul>
       </div>
 
       <div class="footer">
         <div class="small">
-          MIT licensed. This page is intentionally simple. If you want the plugin docs, start at the README in the repo.
+          MIT licensed. This page is intentionally simple. Full docs live in the repo README.
         </div>
       </div>
     </div>
   </body>
 </html>
-
