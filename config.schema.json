@@ -2,7 +2,7 @@
   "pluginAlias": "LLMControl",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Homebridge LLM Control adds Telegram chat control for your existing Homebridge accessories, plus LLM-powered monitoring, watchdog checks, and safe self-healing actions.\\n\\nTelegram quick setup:\\n1) Create a bot with @BotFather and copy the bot token\\n2) Paste the token below (Telegram auto-enables)\\n3) Pairing mode: Auto-link first chat (easiest) then send any message to your bot\\n4) In Telegram, run /setup to configure your LLM API key + model from chat\\n5) Use /hb list (or just type: turn off the lights in 30 minutes)",
+  "headerDisplay": "Homebridge LLM Control adds chat control for your existing Homebridge accessories, plus LLM-powered monitoring, watchdog checks, and safe self-healing actions.\\n\\nQuick setup options:\\n\\nOption A (ntfy, easiest):\\n1) Enable ntfy below and leave the topic blank\\n2) Restart Homebridge\\n3) Subscribe in the ntfy mobile app to the topic shown in /status or the Homebridge logs\\n4) Send: /hb list\\n\\nOption B (Telegram):\\n1) Create a bot with @BotFather and copy the bot token\\n2) Paste the token below (Telegram auto-enables)\\n3) Pairing mode: Auto-link first chat (easiest) then send any message to your bot\\n4) In Telegram, run /setup to configure your LLM API key + model from chat\\n\\nTip: once configured, you can also just type: turn off the lights in 30 minutes",
   "footerDisplay": "Security note: use least-privilege API keys and only whitelist trusted self-healing commands. Accessory control uses Homebridge's local HAP HTTP endpoints (requires Homebridge to run with -I).",
   "schema": {
     "type": "object",
@@ -129,6 +129,54 @@
             "default": 2000,
             "minimum": 1000,
             "maximum": 10000
+          }
+        }
+      },
+      "ntfy": {
+        "type": "object",
+        "title": "ntfy (Quick Setup)",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enable ntfy",
+            "default": false,
+            "description": "Two-way chat + notifications using ntfy. Topic acts as the shared secret."
+          },
+          "serverUrl": {
+            "type": "string",
+            "title": "ntfy Server URL",
+            "default": "https://ntfy.sh"
+          },
+          "topic": {
+            "type": "string",
+            "title": "Topic (optional)",
+            "description": "Leave blank to auto-generate a random topic. You can see it in /status or Homebridge logs."
+          },
+          "subscribeEnabled": {
+            "type": "boolean",
+            "title": "Receive Commands (Subscribe)",
+            "default": true
+          },
+          "publishEnabled": {
+            "type": "boolean",
+            "title": "Send Notifications (Publish)",
+            "default": true
+          }
+        }
+      },
+      "discordWebhook": {
+        "type": "object",
+        "title": "Discord Webhook (Notifications)",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enable Discord Webhook",
+            "default": false
+          },
+          "webhookUrl": {
+            "type": "string",
+            "title": "Webhook URL",
+            "description": "Outbound notifications only (no command input)."
           }
         }
       },
@@ -385,6 +433,43 @@
         },
         {
           "key": "messaging.pollIntervalMs"
+        }
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "ntfy (Quick Setup)",
+      "expandable": true,
+      "items": [
+        "ntfy.enabled",
+        {
+          "key": "ntfy.serverUrl",
+          "condition": "model.ntfy && model.ntfy.enabled"
+        },
+        {
+          "key": "ntfy.topic",
+          "condition": "model.ntfy && model.ntfy.enabled"
+        },
+        {
+          "key": "ntfy.subscribeEnabled",
+          "condition": "model.ntfy && model.ntfy.enabled"
+        },
+        {
+          "key": "ntfy.publishEnabled",
+          "condition": "model.ntfy && model.ntfy.enabled"
+        }
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Discord Webhook (Notifications)",
+      "expandable": true,
+      "items": [
+        "discordWebhook.enabled",
+        {
+          "key": "discordWebhook.webhookUrl",
+          "type": "password",
+          "condition": "model.discordWebhook && model.discordWebhook.enabled"
         }
       ]
     },

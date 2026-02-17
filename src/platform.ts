@@ -20,6 +20,8 @@ import { OpenAIClient } from './llm/openai-client';
 import { PersistentState, StateStore, VirtualDevice, VirtualDeviceType } from './state/state-store';
 import { HealthService } from './monitoring/health-service';
 import { TelegramService } from './messaging/telegram-service';
+import { NtfyService } from './messaging/ntfy-service';
+import { DiscordWebhookService } from './messaging/discord-webhook-service';
 import { AutomationService } from './automation/automation-service';
 import {
   deepMerge,
@@ -39,6 +41,8 @@ const SECRET_PATHS: string[][] = [
   ['provider', 'apiKey'],
   ['messaging', 'botToken'],
   ['messaging', 'pairingSecret'],
+  ['ntfy', 'topic'],
+  ['discordWebhook', 'webhookUrl'],
 ];
 
 const SECRET_PATH_STRINGS = new Set(SECRET_PATHS.map((path) => path.join('.')));
@@ -58,6 +62,13 @@ const ALLOWED_RUNTIME_CONFIG_PATHS = new Set<string>([
   'messaging.onboardingCode',
   'messaging.allowedChatIds',
   'messaging.pollIntervalMs',
+  'ntfy.enabled',
+  'ntfy.serverUrl',
+  'ntfy.topic',
+  'ntfy.subscribeEnabled',
+  'ntfy.publishEnabled',
+  'discordWebhook.enabled',
+  'discordWebhook.webhookUrl',
   'homebridgeControl.enabled',
   'homebridgeControl.includeChildBridges',
   'homebridgeControl.refreshIntervalSeconds',
@@ -122,6 +133,8 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
   private healthService?: HealthService;
 
   private telegramService?: TelegramService;
+  private ntfyService?: NtfyService;
+  private discordWebhookService?: DiscordWebhookService;
   private automationService?: AutomationService;
   private dailyMonitorTask?: ScheduledTask;
   private watchdogTimer?: NodeJS.Timeout;
@@ -190,6 +203,7 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     this.api.on('shutdown', () => {
       this.stopSchedulers();
       this.telegramService?.stop();
+      this.ntfyService?.stop();
       this.automationService?.stop();
       this.hbControl?.stop();
       this.jobScheduler?.stop();
@@ -330,6 +344,90 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
         this.log.error(`[${PLATFORM_NAME}] Telegram start failed: ${(error as Error).message}`);
         this.telegramService.stop();
         this.telegramService = undefined;
+      }
+    }
+
+    // ntfy (two-way)
+    const shouldRunNtfy = nextConfig.ntfy.enabled;
+    const ntfyConfigChanged =
+      previousConfig?.ntfy.enabled !== nextConfig.ntfy.enabled ||
+      previousConfig?.ntfy.serverUrl !== nextConfig.ntfy.serverUrl ||
+      previousConfig?.ntfy.topic !== nextConfig.ntfy.topic ||
+      previousConfig?.ntfy.subscribeEnabled !== nextConfig.ntfy.subscribeEnabled ||
+      previousConfig?.ntfy.publishEnabled !== nextConfig.ntfy.publishEnabled;
+
+    if (!shouldRunNtfy) {
+      this.ntfyService?.stop();
+      this.ntfyService = undefined;
+    } else if (!this.ntfyService || ntfyConfigChanged) {
+      this.ntfyService?.stop();
+
+      const desiredTopic = nextConfig.ntfy.topic ?? this.state.ntfyTopic;
+      if (!desiredTopic) {
+        this.state.ntfyTopic = this.generateNtfyTopic();
+        await this.persistState();
+      } else if (desiredTopic !== this.state.ntfyTopic) {
+        this.state.ntfyTopic = desiredTopic;
+        await this.persistState();
+      }
+
+      const topic = this.state.ntfyTopic as string;
+      this.ntfyService = new NtfyService(
+        this.log,
+        nextConfig.ntfy.serverUrl,
+        topic,
+        {
+          subscribeEnabled: nextConfig.ntfy.subscribeEnabled,
+          publishEnabled: nextConfig.ntfy.publishEnabled,
+          outgoingTag: 'llmcontrol-out',
+        },
+        async (message) => {
+          await this.handleAuthorizedMessage(
+            'ntfy',
+            async (reply) => {
+              await this.ntfyService?.sendMessage(reply);
+            },
+            message.text,
+          );
+        },
+      );
+
+      try {
+        await this.ntfyService.start();
+        this.log.info(`[${PLATFORM_NAME}] ntfy enabled. Topic: ${nextConfig.ntfy.serverUrl}/${topic}`);
+
+        if (!this.state.ntfyHelloSent) {
+          await this.ntfyService.sendMessage(
+            `Hey it's set up. Homebridge LLM Control is online.\n\nTry:\n- /hb list\n- /hb schedule 30m off lights\n- /help`,
+          );
+          this.state.ntfyHelloSent = true;
+          await this.persistState();
+        }
+      } catch (error) {
+        this.log.error(`[${PLATFORM_NAME}] ntfy start failed: ${(error as Error).message}`);
+        this.ntfyService.stop();
+        this.ntfyService = undefined;
+      }
+    }
+
+    // Discord webhook (outbound notifications)
+    const shouldRunDiscordWebhook = nextConfig.discordWebhook.enabled && Boolean(nextConfig.discordWebhook.webhookUrl);
+    const discordWebhookChanged =
+      previousConfig?.discordWebhook.enabled !== nextConfig.discordWebhook.enabled ||
+      previousConfig?.discordWebhook.webhookUrl !== nextConfig.discordWebhook.webhookUrl;
+
+    if (!shouldRunDiscordWebhook) {
+      this.discordWebhookService = undefined;
+    } else if (!this.discordWebhookService || discordWebhookChanged) {
+      this.discordWebhookService = new DiscordWebhookService(this.log, nextConfig.discordWebhook.webhookUrl as string);
+      if (!this.state.discordWebhookHelloSent) {
+        try {
+          await this.discordWebhookService.sendMessage(`Homebridge LLM Control is online (Discord webhook configured).`);
+          this.state.discordWebhookHelloSent = true;
+          await this.persistState();
+        } catch (error) {
+          this.log.warn(`[${PLATFORM_NAME}] Discord webhook test message failed: ${(error as Error).message}`);
+        }
       }
     }
 
@@ -878,8 +976,8 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     await this.applyConfigUpdate(reason);
   }
 
-  private async handleSetupConversation(chatId: string, trimmed: string): Promise<boolean> {
-    if (!this.pendingSetup || !this.telegramService) {
+  private async handleSetupConversation(send: (message: string) => Promise<void>, trimmed: string): Promise<boolean> {
+    if (!this.pendingSetup) {
       return false;
     }
 
@@ -889,7 +987,7 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
 
     if (trimmed === '/cancel') {
       this.pendingSetup = undefined;
-      await this.telegramService.sendMessage(chatId, 'Setup cancelled.');
+      await send('Setup cancelled.');
       return true;
     }
 
@@ -897,16 +995,16 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       const lower = trimmed.toLowerCase();
       if (lower === 'openai') {
         this.pendingSetup = { step: 'apiKey', preset: 'openai' };
-        await this.telegramService.sendMessage(chatId, 'Send your OpenAI API key (starts with sk-...).');
+        await send('Send your OpenAI API key (starts with sk-...).');
         return true;
       }
       if (lower === 'custom') {
         this.pendingSetup = { step: 'baseUrl', preset: 'custom' };
-        await this.telegramService.sendMessage(chatId, 'Send your custom base URL (example: https://api.example.com/v1).');
+        await send('Send your custom base URL (example: https://api.example.com/v1).');
         return true;
       }
 
-      await this.telegramService.sendMessage(chatId, "Reply with 'openai' or 'custom'. Send /cancel to abort.");
+      await send("Reply with 'openai' or 'custom'. Send /cancel to abort.");
       return true;
     }
 
@@ -915,18 +1013,18 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
         // Basic URL validation.
         new URL(trimmed);
       } catch {
-        await this.telegramService.sendMessage(chatId, 'That does not look like a valid URL. Try again or /cancel.');
+        await send('That does not look like a valid URL. Try again or /cancel.');
         return true;
       }
 
       this.pendingSetup = { step: 'apiKey', preset: 'custom', baseUrl: trimmed };
-      await this.telegramService.sendMessage(chatId, 'Send your API key for this provider.');
+      await send('Send your API key for this provider.');
       return true;
     }
 
     if (this.pendingSetup.step === 'apiKey') {
       if (!trimmed) {
-        await this.telegramService.sendMessage(chatId, 'API key cannot be empty. Try again or /cancel.');
+        await send('API key cannot be empty. Try again or /cancel.');
         return true;
       }
 
@@ -937,10 +1035,7 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
         apiKey: trimmed,
       };
 
-      await this.telegramService.sendMessage(
-        chatId,
-        "Send a model name (example: gpt-4.1-mini) or reply 'skip' to keep the default.",
-      );
+      await send("Send a model name (example: gpt-4.1-mini) or reply 'skip' to keep the default.");
       return true;
     }
 
@@ -962,15 +1057,12 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       await this.commitRuntimeConfig(nextRuntime, 'setup');
       this.pendingSetup = undefined;
 
-      await this.telegramService.sendMessage(
-        chatId,
-        [
-          "Provider configured. You're good to go.",
-          'Try: /hb list',
-          "Try saying: 'turn off the lights in 30 minutes'",
-          'Try: /health',
-        ].join('\n'),
-      );
+      await send([
+        "Provider configured. You're good to go.",
+        'Try: /hb list',
+        "Try saying: 'turn off the lights in 30 minutes'",
+        'Try: /health',
+      ].join('\n'));
       return true;
     }
 
@@ -1729,26 +1821,45 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       return;
     }
 
-    if (await this.handleSetupConversation(chatId, trimmed)) {
+    await this.handleAuthorizedMessage(
+      'telegram',
+      async (reply) => {
+        await this.telegramService?.sendMessage(chatId, reply);
+      },
+      trimmed,
+    );
+  }
+
+  private async handleAuthorizedMessage(
+    source: 'telegram' | 'ntfy',
+    send: (message: string) => Promise<void>,
+    trimmed: string,
+  ): Promise<void> {
+    if (!this.config) {
+      return;
+    }
+
+    if (await this.handleSetupConversation(send, trimmed)) {
       return;
     }
 
     if (trimmed === '/cancel') {
-      await this.telegramService.sendMessage(chatId, 'Nothing to cancel.');
+      await send('Nothing to cancel.');
       return;
     }
 
     if (trimmed.toLowerCase().startsWith('/link')) {
-      await this.telegramService.sendMessage(chatId, 'This bot is already linked. Use /unlink to re-pair.');
+      if (source === 'telegram') {
+        await send('This bot is already linked. Use /unlink to re-pair.');
+      } else {
+        await send('Linking is not used for ntfy. The topic acts as the shared secret.');
+      }
       return;
     }
 
     if (trimmed === '/setup') {
       this.pendingSetup = { step: 'preset' };
-      await this.telegramService.sendMessage(
-        chatId,
-        "Setup: reply with 'openai' or 'custom'. Send /cancel to abort.",
-      );
+      await send("Setup: reply with 'openai' or 'custom'. Send /cancel to abort.");
       return;
     }
 
@@ -1758,110 +1869,118 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
         ? `enabled (every ${this.config.operations.restartEveryHours}h)`
         : 'disabled';
 
-      await this.telegramService.sendMessage(chatId, [
-        `Linked chat: ${this.state.linkedChatId}`,
-        `Pairing mode: ${this.config.messaging.pairingMode}`,
+      const ntfyStatus = this.config.ntfy.enabled
+        ? `enabled (${this.config.ntfy.serverUrl}/${this.state.ntfyTopic ?? this.config.ntfy.topic ?? 'topic'})`
+        : 'disabled';
+      const discordStatus = this.config.discordWebhook.enabled ? 'enabled' : 'disabled';
+
+      await send([
+        source === 'telegram' ? `Linked chat: ${this.state.linkedChatId}` : `Channel: ntfy`,
         `LLM provider: ${llm}`,
         this.hbControlStatusText(),
         `Scheduled restart: ${restartStatus}`,
         `Scheduled jobs: ${this.state.oneShotJobs.length}`,
+        `ntfy: ${ntfyStatus}`,
+        `Discord webhook: ${discordStatus}`,
       ].join('\n'));
       return;
     }
 
     if (trimmed === '/unlink') {
+      if (source !== 'telegram') {
+        await send('Unlink is only supported for Telegram.');
+        return;
+      }
+
       this.state.linkedChatId = undefined;
       this.state.setupHelloSent = false;
       await this.persistState();
-      await this.telegramService.sendMessage(
-        chatId,
-        'Unlinked. To link again, follow the pairing mode in Homebridge plugin settings.',
-      );
+      await send('Unlinked. To link again, follow the pairing mode in Homebridge plugin settings.');
       return;
     }
 
     if (trimmed === '/help') {
-      await this.telegramService.sendMessage(chatId, this.helpText());
+      await send(this.helpText());
       return;
     }
 
     if (trimmed.startsWith('/config')) {
       const response = await this.handleConfigCommand(trimmed);
-      await this.telegramService.sendMessage(chatId, response);
+      await send(response);
       return;
     }
 
     if (trimmed === '/commands' || trimmed === '/commands list') {
-      await this.telegramService.sendMessage(chatId, this.commandsListText());
+      await send(this.commandsListText());
       return;
     }
 
     if (trimmed.startsWith('/run ')) {
       const response = await this.handleRunCommand(trimmed);
-      await this.telegramService.sendMessage(chatId, response);
+      await send(response);
       return;
     }
 
     if (trimmed === '/hb' || trimmed.startsWith('/hb ')) {
       const response = await this.handleHbCommand(trimmed);
-      await this.telegramService.sendMessage(chatId, response);
+      await send(response);
       return;
     }
 
     if (trimmed === '/jobs' || trimmed.startsWith('/jobs ')) {
       const response = await this.handleJobsCommand(trimmed);
-      await this.telegramService.sendMessage(chatId, response);
+      await send(response);
       return;
     }
 
     if (trimmed === '/devices') {
       const response = await this.handleHbCommand('/hb list');
-      await this.telegramService.sendMessage(chatId, response);
+      await send(response);
       return;
     }
 
     if (trimmed.startsWith('/device')) {
-      await this.telegramService.sendMessage(chatId, `Virtual devices are deprecated. Use /hb list, /hb on, /hb off, /hb schedule.`);
+      await send('Virtual devices are deprecated. Use /hb list, /hb on, /hb off, /hb schedule.');
       return;
     }
 
     if (trimmed.startsWith('/set ')) {
-      await this.telegramService.sendMessage(chatId, `Use /hb set <id> on|off or /hb set <id> brightness <0-100>.`);
+      await send('Use /hb set <id> on|off or /hb set <id> brightness <0-100>.');
       return;
     }
 
     if (trimmed === '/health') {
       const result = await this.runHealthAnalysis('manual-health-command', { notifyMode: 'never' });
-      await this.telegramService.sendMessage(chatId, result);
+      await send(result);
       return;
     }
 
     if (trimmed === '/watchdog' || trimmed.toLowerCase() === 'watchdog') {
       const result = await this.runHealthAnalysis('manual-watchdog-command', { notifyMode: 'never' });
-      await this.telegramService.sendMessage(chatId, result);
+      await send(result);
       return;
     }
 
     if (trimmed.startsWith('/ask ')) {
       const question = trimmed.replace('/ask', '').trim();
       if (!question) {
-        await this.telegramService.sendMessage(chatId, 'Usage: /ask <question>');
+        await send('Usage: /ask <question>');
         return;
       }
 
       const answer = await this.answerQuestion(question);
-      await this.telegramService.sendMessage(chatId, answer);
+      await send(answer);
       return;
     }
 
     if (trimmed.startsWith('/automation ')) {
       const response = await this.handleAutomationCommand(trimmed);
-      await this.telegramService.sendMessage(chatId, response);
+      await send(response);
       return;
     }
 
     const answer = await this.assistantChat(trimmed);
-    await this.telegramService.sendMessage(chatId, answer);
+    await send(answer);
   }
 
   private async handleAutomationCommand(commandText: string): Promise<string> {
@@ -2069,15 +2188,33 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
   }
 
   private async sendNotification(message: string): Promise<void> {
-    if (!this.telegramService || !this.state.linkedChatId) {
-      return;
+    const tasks: Array<Promise<void>> = [];
+
+    if (this.telegramService && this.state.linkedChatId) {
+      tasks.push(
+        this.telegramService.sendMessage(this.state.linkedChatId, message).catch((error) => {
+          this.log.warn(`[${PLATFORM_NAME}] Failed to send Telegram message: ${(error as Error).message}`);
+        }),
+      );
     }
 
-    try {
-      await this.telegramService.sendMessage(this.state.linkedChatId, message);
-    } catch (error) {
-      this.log.warn(`[${PLATFORM_NAME}] Failed to send Telegram message: ${(error as Error).message}`);
+    if (this.ntfyService && this.config?.ntfy.publishEnabled) {
+      tasks.push(
+        this.ntfyService.sendMessage(message).catch((error) => {
+          this.log.warn(`[${PLATFORM_NAME}] Failed to send ntfy message: ${(error as Error).message}`);
+        }),
+      );
     }
+
+    if (this.discordWebhookService && this.config?.discordWebhook.enabled) {
+      tasks.push(
+        this.discordWebhookService.sendMessage(message).catch((error) => {
+          this.log.warn(`[${PLATFORM_NAME}] Failed to send Discord webhook message: ${(error as Error).message}`);
+        }),
+      );
+    }
+
+    await Promise.all(tasks);
   }
 
   private isAuthorizedChat(chatId: string): boolean {
@@ -2090,6 +2227,12 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
 
   private generateOnboardingCode(): string {
     return Math.random().toString(36).slice(2, 8).toUpperCase();
+  }
+
+  private generateNtfyTopic(): string {
+    // Topic acts as the shared secret; keep it long and unguessable.
+    const raw = randomUUID().replace(/-/g, '');
+    return `hbllm-${raw}`;
   }
 
   private async persistState(): Promise<void> {

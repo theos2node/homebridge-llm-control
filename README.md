@@ -4,7 +4,9 @@ LLM-powered operations plugin for Homebridge with:
 
 - LLM provider presets (`OpenAI` + custom OpenAI-compatible endpoint)
 - Telegram onboarding + chat control
-- Direct control of existing Homebridge accessories (lights/switches/outlets) from Telegram
+- ntfy (Quick Setup) two-way chat + notifications
+- Discord webhook notifications (outbound)
+- Direct control of existing Homebridge accessories (lights/switches/outlets) from chat
 - One-shot scheduling ("turn off the lights in 30 minutes")
 - Optional scheduled Homebridge restarts + restart notifications
 - Daily health monitoring
@@ -72,6 +74,17 @@ Full example:
     "botToken": "123456789:AA...",
     "pairingMode": "first_message",
     "pollIntervalMs": 2000
+  },
+  "ntfy": {
+    "enabled": false,
+    "serverUrl": "https://ntfy.sh",
+    "topic": "",
+    "subscribeEnabled": true,
+    "publishEnabled": true
+  },
+  "discordWebhook": {
+    "enabled": false,
+    "webhookUrl": ""
   },
   "homebridgeControl": {
     "enabled": true,
@@ -156,6 +169,24 @@ Full example:
 - `/automation add <name> | <cron> | <prompt>`
 - `/automation remove <id>`
 - `/automation toggle <id> <on|off>`
+
+## ntfy quick setup (recommended alternative to Telegram)
+
+1. Enable ntfy in plugin settings.
+2. Leave `topic` blank (plugin will auto-generate a random one).
+3. Restart Homebridge.
+4. Install the **ntfy** app (iOS/Android) and subscribe to the topic shown in:
+   - `/status` (Telegram) or
+   - Homebridge logs.
+5. In the ntfy app, publish a message to the topic (for example: `/hb list`).
+
+Notes:
+- The topic acts like a shared secret. Keep it private.
+- The plugin ignores its own outgoing ntfy notifications to avoid loops.
+
+## Discord webhook (notifications)
+
+If you want notifications in a Discord channel (but not command input), create a Discord webhook for your channel and paste the webhook URL into `discordWebhook.webhookUrl`.
 
 ## Controlling lights and devices
 

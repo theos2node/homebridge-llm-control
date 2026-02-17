@@ -58,6 +58,28 @@ const telegramSchema = z.object({
   pollIntervalMs: z.number().int().min(1000).max(10000).default(2000),
 });
 
+const ntfySchema = z.object({
+  enabled: z.boolean().default(false),
+  serverUrl: z.preprocess(
+    (value) => {
+      if (typeof value !== 'string') {
+        return value;
+      }
+      const trimmed = value.trim();
+      return trimmed === '' ? undefined : trimmed;
+    },
+    z.string().url().default('https://ntfy.sh'),
+  ),
+  topic: trimmedOptionalString(),
+  subscribeEnabled: z.boolean().default(true),
+  publishEnabled: z.boolean().default(true),
+});
+
+const discordWebhookSchema = z.object({
+  enabled: z.boolean().default(false),
+  webhookUrl: trimmedOptionalString(),
+});
+
 const monitoringSchema = z.object({
   dailyMonitoringEnabled: z.boolean().default(false),
   dailyMonitoringTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).default('09:00'),
@@ -118,6 +140,8 @@ const rootSchema = z.object({
   name: z.string().default('LLM Control'),
   provider: providerSchema.default({}),
   messaging: telegramSchema.default({ enabled: false }),
+  ntfy: ntfySchema.default({ enabled: false }),
+  discordWebhook: discordWebhookSchema.default({ enabled: false }),
   homebridgeControl: homebridgeControlSchema.default({}),
   operations: operationsSchema.default({}),
   monitoring: monitoringSchema.default({}),
@@ -130,6 +154,8 @@ const rootSchema = z.object({
 export type ProviderConfig = z.infer<typeof providerSchema>;
 export type ProviderConfigWithKey = ProviderConfig & { apiKey: string };
 export type MessagingConfig = z.infer<typeof telegramSchema>;
+export type NtfyConfig = z.infer<typeof ntfySchema>;
+export type DiscordWebhookConfig = z.infer<typeof discordWebhookSchema>;
 export type HomebridgeControlConfig = z.infer<typeof homebridgeControlSchema>;
 export type OperationsConfig = z.infer<typeof operationsSchema>;
 export type MonitoringConfig = z.infer<typeof monitoringSchema>;
@@ -152,6 +178,8 @@ export type LLMControlNormalizedConfig = Omit<ParsedRootConfig, 'selfHealing' | 
 export type LLMControlPlatformConfig = PlatformConfig & {
   provider?: unknown;
   messaging?: unknown;
+  ntfy?: unknown;
+  discordWebhook?: unknown;
   homebridgeControl?: unknown;
   operations?: unknown;
   monitoring?: unknown;
@@ -234,6 +262,24 @@ export const normalizeConfig = (config: LLMControlPlatformConfig, log?: Logger):
     log?.warn(`[${PLATFORM_NAME}] Provider preset is 'custom' but provider.baseUrl is missing; LLM calls will be disabled.`);
   }
 
+  const ntfy: NtfyConfig = { ...raw.ntfy };
+  if (!ntfy.enabled && ntfy.topic) {
+    ntfy.enabled = true;
+    log?.info(`[${PLATFORM_NAME}] ntfy enabled automatically because a topic is set.`);
+  }
+  if (ntfy.enabled && !ntfy.serverUrl) {
+    log?.warn(`[${PLATFORM_NAME}] ntfy is enabled but ntfy.serverUrl is missing.`);
+  }
+
+  const discordWebhook: DiscordWebhookConfig = { ...raw.discordWebhook };
+  if (!discordWebhook.enabled && discordWebhook.webhookUrl) {
+    discordWebhook.enabled = true;
+    log?.info(`[${PLATFORM_NAME}] Discord webhook enabled automatically because a webhook URL is set.`);
+  }
+  if (discordWebhook.enabled && !discordWebhook.webhookUrl) {
+    log?.warn(`[${PLATFORM_NAME}] Discord webhook is enabled but discordWebhook.webhookUrl is missing.`);
+  }
+
   const commands = sanitizeList(
     raw.selfHealing.commands,
     healingCommandSchema,
@@ -254,6 +300,8 @@ export const normalizeConfig = (config: LLMControlPlatformConfig, log?: Logger):
     ...raw,
     provider,
     messaging,
+    ntfy,
+    discordWebhook,
     selfHealing: {
       ...raw.selfHealing,
       commands,

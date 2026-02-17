@@ -25,6 +25,9 @@ export type PersistentState = {
   onboardingCode?: string;
   linkedChatId?: string;
   setupHelloSent?: boolean;
+  ntfyTopic?: string;
+  ntfyHelloSent?: boolean;
+  discordWebhookHelloSent?: boolean;
   lastStartupAt?: string;
   runtimeConfig: Record<string, unknown>;
   virtualDevices: VirtualDevice[];
@@ -44,6 +47,8 @@ const defaultState = (): PersistentState => ({
   runtimeAutomations: [],
   commandCooldowns: {},
   setupHelloSent: false,
+  ntfyHelloSent: false,
+  discordWebhookHelloSent: false,
   actionQuota: {
     date: new Date().toISOString().slice(0, 10),
     count: 0,
@@ -156,6 +161,10 @@ export class StateStore {
         onboardingCode: parsed.onboardingCode,
         linkedChatId: parsed.linkedChatId,
         setupHelloSent: parsed.setupHelloSent ?? false,
+        ntfyTopic: typeof parsed.ntfyTopic === 'string' ? parsed.ntfyTopic : undefined,
+        ntfyHelloSent: typeof parsed.ntfyHelloSent === 'boolean' ? parsed.ntfyHelloSent : false,
+        discordWebhookHelloSent:
+          typeof parsed.discordWebhookHelloSent === 'boolean' ? parsed.discordWebhookHelloSent : false,
         lastStartupAt: typeof parsed.lastStartupAt === 'string' ? parsed.lastStartupAt : undefined,
         runtimeConfig: isPlainObject(parsed.runtimeConfig) ? parsed.runtimeConfig : {},
         virtualDevices: sanitizeVirtualDevices(parsed.virtualDevices),
