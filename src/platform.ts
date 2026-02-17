@@ -125,6 +125,34 @@ const parseDurationToSeconds = (input: string): number | null => {
   return totalSeconds > 0 ? totalSeconds : null;
 };
 
+const extractDelaySecondsFromText = (text: string): number | null => {
+  const lower = text.toLowerCase();
+  const match = lower.match(
+    /\b(?:in|after)\s+((?:\d+\s*(?:d|day|days|h|hr|hrs|hour|hours|m|min|mins|minute|minutes|s|sec|secs|second|seconds)\s*)+)\b/,
+  );
+  if (!match) {
+    return null;
+  }
+
+  return parseDurationToSeconds(match[1]);
+};
+
+const formatDelayShort = (seconds: number): string => {
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    return '0s';
+  }
+  if (seconds < 60) {
+    return `${Math.round(seconds)}s`;
+  }
+  if (seconds < 3600) {
+    return `${Math.round(seconds / 60)}m`;
+  }
+  if (seconds < 86400) {
+    return `${Math.round(seconds / 3600)}h`;
+  }
+  return `${Math.round(seconds / 86400)}d`;
+};
+
 export class LLMControlPlatform implements DynamicPlatformPlugin {
   private readonly baseConfig?: LLMControlNormalizedConfig;
   private config?: LLMControlNormalizedConfig;
@@ -1557,6 +1585,7 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       '- Only use entityId values from entities. Never invent ids.',
       '- If multiple devices could match, ask a clarifying question and do not take action.',
       '- For restarts, prefer scheduling a restart a few seconds in the future (delaySeconds >= 3).',
+      '- You can directly control existing Homebridge accessories; do not mention HomeKit automations or virtual devices.',
       '- Never output secrets.',
     ].join(' ');
 
@@ -1979,8 +2008,115 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       return;
     }
 
+    if (!trimmed.startsWith('/')) {
+      const handled = await this.tryHandleNaturalLanguageShortcuts(send, trimmed);
+      if (handled) {
+        return;
+      }
+    }
+
     const answer = await this.assistantChat(trimmed);
     await send(answer);
+  }
+
+  private async tryHandleNaturalLanguageShortcuts(send: (message: string) => Promise<void>, text: string): Promise<boolean> {
+    const lower = text.toLowerCase();
+
+    const hasOffIntent = /\b(turn|switch|shut|power)\b[\s\S]*\boff\b/.test(lower);
+    const hasOnIntent = /\b(turn|switch|power)\b[\s\S]*\bon\b/.test(lower);
+    const desiredOn = hasOnIntent && !hasOffIntent ? true : hasOffIntent && !hasOnIntent ? false : null;
+    if (desiredOn === null) {
+      return false;
+    }
+
+    type Group = 'all_lights' | 'all_switches' | 'all_outlets' | 'all';
+    const group: Group | null =
+      (/\ball\b/.test(lower) && /\blight(s)?\b/.test(lower)) ? 'all_lights'
+        : (/\ball\b/.test(lower) && /\bswitch(es)?\b/.test(lower)) ? 'all_switches'
+          : (/\ball\b/.test(lower) && /(\boutlet(s)?\b|\bplug(s)?\b)/.test(lower)) ? 'all_outlets'
+            : (/\beverything\b/.test(lower) || /\ball devices\b/.test(lower)) ? 'all'
+              : null;
+
+    if (!group) {
+      return false;
+    }
+
+    const delaySeconds = extractDelaySecondsFromText(lower);
+    const runAt = typeof delaySeconds === 'number' && delaySeconds > 0 ? new Date(Date.now() + delaySeconds * 1000) : undefined;
+
+    if (!this.config?.homebridgeControl.enabled) {
+      await send('Homebridge control is disabled. Enable it with: /config set homebridgeControl.enabled true');
+      return true;
+    }
+
+    if (!this.hbControl) {
+      await send('Homebridge control is starting. Try again in a few seconds or run: /hb status');
+      return true;
+    }
+
+    const list = this.hbControl.listEntities();
+    const targets =
+      group === 'all_lights'
+        ? list.filter((e) => e.type === 'light')
+        : group === 'all_switches'
+          ? list.filter((e) => e.type === 'switch')
+          : group === 'all_outlets'
+            ? list.filter((e) => e.type === 'outlet')
+            : list;
+
+    if (targets.length === 0) {
+      await send(
+        [
+          "I don't see any controllable devices yet.",
+          'Try:',
+          '- /hb refresh',
+          '- /hb list',
+          '',
+          'If it still shows 0 entities, make sure Homebridge is running with -I and your bridge ports are fixed in config.json.',
+        ].join('\n'),
+      );
+      return true;
+    }
+
+    const actionLabel =
+      group === 'all_lights'
+        ? 'lights'
+        : group === 'all_switches'
+          ? 'switches'
+          : group === 'all_outlets'
+            ? 'outlets'
+            : 'devices';
+
+    if (runAt) {
+      await this.scheduleHbEntities(targets, runAt, { on: desiredOn });
+      const inText = typeof delaySeconds === 'number' ? formatDelayShort(delaySeconds) : 'later';
+      await send(
+        `Scheduled ${desiredOn ? 'ON' : 'OFF'} for ${targets.length} ${actionLabel} in ${inText} (${runAt.toISOString()}).`,
+      );
+      return true;
+    }
+
+    let ok = 0;
+    const failures: string[] = [];
+    for (const entity of targets) {
+      try {
+        await this.hbControl.setEntity(entity.id, { on: desiredOn });
+        ok += 1;
+      } catch (error) {
+        failures.push(`${entity.name}: ${(error as Error).message}`);
+      }
+    }
+
+    const summary = `Turned ${desiredOn ? 'ON' : 'OFF'} ${ok}/${targets.length} ${actionLabel}.`;
+    if (failures.length === 0) {
+      await send(summary);
+      return true;
+    }
+
+    const shown = failures.slice(0, 5);
+    const more = failures.length > shown.length ? `\n(+${failures.length - shown.length} more)` : '';
+    await send(`${summary}\nFailures:\n- ${shown.join('\n- ')}${more}`);
+    return true;
   }
 
   private async handleAutomationCommand(commandText: string): Promise<string> {
