@@ -49,6 +49,7 @@ Use Homebridge UI plugin settings (recommended) or `config.json`.
   "messaging": {
     "enabled": true,
     "botToken": "123456789:AA...",
+    "pairingMode": "first_message",
     "pollIntervalMs": 2000
   },
   "monitoring": {
@@ -92,13 +93,16 @@ Use Homebridge UI plugin settings (recommended) or `config.json`.
 ## Telegram onboarding flow
 
 1. Create a bot with BotFather and copy the bot token.
-2. Add token in plugin settings and restart Homebridge.
-3. Check Homebridge logs for onboarding code.
-4. Message your bot: `/start <onboarding-code>`.
-5. Bot links your chat and enables commands.
+2. Paste the token in plugin settings.
+3. Choose a pairing mode:
+   - **Auto-link first chat (easiest):** send any message to your bot and it will link that chat.
+   - **Secret:** set a pairing secret in plugin settings, then send `/link <secret>` to your bot.
+   - **Onboarding code:** the plugin will accept `/start <code>` (code is shown in Homebridge logs).
 
 ## Telegram commands
 
+- `/status`
+- `/unlink`
 - `/help`
 - `/health`
 - `/watchdog`

@@ -2,7 +2,7 @@
   "pluginAlias": "LLMControl",
   "pluginType": "platform",
   "singular": true,
-  "headerDisplay": "Homebridge LLM Control lets you connect an LLM (OpenAI or compatible), use Telegram for chat/onboarding, run daily monitoring, watchdog checks, and safe self-healing actions.",
+  "headerDisplay": "Homebridge LLM Control lets you connect an LLM (OpenAI or compatible), use Telegram for chat/onboarding, run daily monitoring, watchdog checks, and safe self-healing actions.\\n\\nTelegram quick setup:\\n1) Create a bot with @BotFather and copy the bot token\\n2) Paste the token below\\n3) Pairing mode: Auto-link first chat (easiest) then send any message to your bot",
   "footerDisplay": "Security note: use least-privilege API keys and only whitelist trusted self-healing commands.",
   "schema": {
     "type": "object",
@@ -87,6 +87,30 @@
           "botToken": {
             "type": "string",
             "title": "Telegram Bot Token"
+          },
+          "pairingMode": {
+            "type": "string",
+            "title": "Pairing Mode",
+            "default": "first_message",
+            "oneOf": [
+              {
+                "title": "Auto-link first chat (easiest)",
+                "enum": ["first_message"]
+              },
+              {
+                "title": "Secret (/link <secret>)",
+                "enum": ["secret"]
+              },
+              {
+                "title": "Onboarding code (/start <code>)",
+                "enum": ["code"]
+              }
+            ]
+          },
+          "pairingSecret": {
+            "type": "string",
+            "title": "Pairing Secret (used for Secret mode)",
+            "description": "If pairing mode is Secret, send /link <secret> in Telegram to link your chat."
           },
           "onboardingCode": {
             "type": "string",
@@ -292,20 +316,23 @@
         "messaging.enabled",
         {
           "key": "messaging.botToken",
-          "type": "password",
-          "condition": "model.messaging && model.messaging.enabled"
+          "type": "password"
         },
         {
-          "key": "messaging.onboardingCode",
-          "condition": "model.messaging && model.messaging.enabled"
+          "key": "messaging.pairingMode"
         },
         {
-          "key": "messaging.allowedChatIds",
-          "condition": "model.messaging && model.messaging.enabled"
+          "key": "messaging.pairingSecret",
+          "type": "password"
         },
         {
-          "key": "messaging.pollIntervalMs",
-          "condition": "model.messaging && model.messaging.enabled"
+          "key": "messaging.onboardingCode"
+        },
+        {
+          "key": "messaging.allowedChatIds"
+        },
+        {
+          "key": "messaging.pollIntervalMs"
         }
       ]
     },

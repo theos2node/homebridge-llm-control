@@ -113,9 +113,21 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
 
       try {
         await this.telegramService.start();
-        this.log.info(
-          `[${PLATFORM_NAME}] Telegram onboarding code: ${this.state.onboardingCode}. Send /start ${this.state.onboardingCode} to your bot.`,
-        );
+        if (this.state.linkedChatId) {
+          this.log.info(`[${PLATFORM_NAME}] Telegram is enabled and already linked to chat ${this.state.linkedChatId}.`);
+        } else if (this.config.messaging.pairingMode === 'first_message') {
+          this.log.info(
+            `[${PLATFORM_NAME}] Telegram pairing mode: auto-link first chat. Send any message to your bot to link.`,
+          );
+        } else if (this.config.messaging.pairingMode === 'secret') {
+          this.log.info(
+            `[${PLATFORM_NAME}] Telegram pairing mode: secret. Send /link <your-secret> to your bot to link.`,
+          );
+        } else {
+          this.log.info(
+            `[${PLATFORM_NAME}] Telegram pairing mode: onboarding code. Send /start ${this.state.onboardingCode} to your bot to link.`,
+          );
+        }
       } catch (error) {
         this.log.error(`[${PLATFORM_NAME}] Telegram start failed: ${(error as Error).message}`);
         this.telegramService.stop();
@@ -362,28 +374,75 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     const trimmed = text.trim();
 
     if (!this.state.linkedChatId) {
-      if (trimmed.toLowerCase().startsWith('/start')) {
+      const mode = this.config.messaging.pairingMode;
+
+      if (mode === 'first_message') {
+        this.state.linkedChatId = chatId;
+        await this.persistState();
+        await this.telegramService.sendMessage(chatId, 'Linked. Send /help to see commands.');
+        return;
+      }
+
+      if (mode === 'secret') {
+        const match = trimmed.match(/^\/(link|start)\s+(.+)$/i);
+        const suppliedSecret = match?.[2]?.trim();
+        if (suppliedSecret && suppliedSecret === this.config.messaging.pairingSecret) {
+          this.state.linkedChatId = chatId;
+          await this.persistState();
+          await this.telegramService.sendMessage(chatId, 'Linked. Send /help to see commands.');
+          return;
+        }
+
+        await this.telegramService.sendMessage(
+          chatId,
+          `Not linked yet. Send /link <secret> to link this chat. Your chat id is ${chatId}.`,
+        );
+        return;
+      }
+
+      // onboarding code mode
+      if (trimmed.toLowerCase().startsWith('/start') || trimmed.toLowerCase().startsWith('/link')) {
         const suppliedCode = trimmed.split(/\s+/)[1];
         if (suppliedCode && suppliedCode === this.state.onboardingCode) {
           this.state.linkedChatId = chatId;
           await this.persistState();
-          await this.telegramService.sendMessage(
-            chatId,
-            'Homebridge LLM Control linked successfully. Send /help to see commands.',
-          );
+          await this.telegramService.sendMessage(chatId, 'Linked. Send /help to see commands.');
           return;
         }
       }
 
       await this.telegramService.sendMessage(
         chatId,
-        `Bot not linked yet. Send /start ${this.state.onboardingCode} to finish onboarding.`,
+        `Not linked yet. Send /start ${this.state.onboardingCode} to link this chat. Your chat id is ${chatId}.`,
       );
       return;
     }
 
     if (!this.isAuthorizedChat(chatId)) {
       this.log.warn(`[${PLATFORM_NAME}] Ignoring message from unauthorized chat ${chatId}`);
+      return;
+    }
+
+    if (trimmed.toLowerCase().startsWith('/link')) {
+      await this.telegramService.sendMessage(chatId, 'This bot is already linked. Use /unlink to re-pair.');
+      return;
+    }
+
+    if (trimmed === '/status') {
+      await this.telegramService.sendMessage(
+        chatId,
+        `Linked chat: ${this.state.linkedChatId}\\nPairing mode: ${this.config.messaging.pairingMode}`,
+      );
+      return;
+    }
+
+    if (trimmed === '/unlink') {
+      this.state.linkedChatId = undefined;
+      await this.persistState();
+      await this.telegramService.sendMessage(
+        chatId,
+        'Unlinked. To link again, follow the pairing mode in Homebridge plugin settings.',
+      );
       return;
     }
 
@@ -564,6 +623,9 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
   private helpText(): string {
     return [
       'Homebridge LLM Control commands:',
+      '/status - Show link status',
+      '/unlink - Unlink this chat',
+      '/link <secret> - Link chat (only used before linking in Secret mode)',
       '/help - Show this message',
       '/health - Run health analysis now',
       '/watchdog - Trigger watchdog investigation',

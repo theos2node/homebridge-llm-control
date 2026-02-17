@@ -18,6 +18,8 @@ const providerSchema = z.object({
 const telegramSchema = z.object({
   enabled: z.boolean().default(false),
   botToken: z.string().optional(),
+  pairingMode: z.enum(['first_message', 'secret', 'code']).default('first_message'),
+  pairingSecret: z.string().min(4).optional(),
   onboardingCode: z.string().optional(),
   allowedChatIds: z.array(z.string()).default([]),
   pollIntervalMs: z.number().int().min(1000).max(10000).default(2000),
@@ -106,6 +108,10 @@ export const normalizeConfig = (config: LLMControlPlatformConfig): LLMControlNor
 
   if (normalized.messaging.enabled && !normalized.messaging.botToken) {
     throw new Error('messaging.botToken is required when messaging.enabled is true');
+  }
+
+  if (normalized.messaging.enabled && normalized.messaging.pairingMode === 'secret' && !normalized.messaging.pairingSecret) {
+    throw new Error('messaging.pairingSecret is required when messaging.pairingMode is secret');
   }
 
   return normalized;
