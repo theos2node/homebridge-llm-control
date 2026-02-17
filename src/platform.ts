@@ -39,6 +39,8 @@ const SECRET_PATHS: string[][] = [
   ['messaging', 'pairingSecret'],
 ];
 
+const SECRET_PATH_STRINGS = new Set(SECRET_PATHS.map((path) => path.join('.')));
+
 const ALLOWED_RUNTIME_CONFIG_PATHS = new Set<string>([
   'provider.preset',
   'provider.apiKey',
@@ -803,9 +805,13 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       if (!path) {
         return 'Usage: /config get <path>';
       }
+      if (SECRET_PATH_STRINGS.has(path)) {
+        return `${path} = "***"`;
+      }
       const parts = path.split('.').filter(Boolean);
-      const value = getAtPath(this.config, parts);
-      return `${path} = ${JSON.stringify(redactSecrets(value, SECRET_PATHS), null, 2)}`;
+      const redacted = redactSecrets(this.config, SECRET_PATHS);
+      const value = getAtPath(redacted, parts);
+      return `${path} = ${JSON.stringify(value, null, 2)}`;
     }
 
     if (op === 'set') {
