@@ -1,15 +1,48 @@
-import { PlatformConfig } from 'homebridge';
+import { Logger, PlatformConfig } from 'homebridge';
 import { z } from 'zod';
 
 export const PLUGIN_NAME = 'homebridge-llm-control';
 export const PLATFORM_NAME = 'LLMControl';
 
+const trimmedOptionalString = () =>
+  z.preprocess(
+    (value) => {
+      if (typeof value !== 'string') {
+        return value;
+      }
+      const trimmed = value.trim();
+      return trimmed === '' ? undefined : trimmed;
+    },
+    z.string().optional(),
+  );
+
+const trimmedStringWithDefault = (defaultValue: string) =>
+  z.preprocess(
+    (value) => {
+      if (typeof value !== 'string') {
+        return value;
+      }
+      const trimmed = value.trim();
+      return trimmed === '' ? undefined : trimmed;
+    },
+    z.string().min(1).default(defaultValue),
+  );
+
 const providerSchema = z.object({
   preset: z.enum(['openai', 'custom']).default('openai'),
-  apiKey: z.string().min(1, 'provider.apiKey is required'),
-  model: z.string().min(1, 'provider.model is required'),
-  baseUrl: z.string().url().optional(),
-  organization: z.string().optional(),
+  apiKey: trimmedOptionalString(),
+  model: trimmedStringWithDefault('gpt-4.1-mini'),
+  baseUrl: z.preprocess(
+    (value) => {
+      if (typeof value !== 'string') {
+        return value;
+      }
+      const trimmed = value.trim();
+      return trimmed === '' ? undefined : trimmed;
+    },
+    z.string().url().optional(),
+  ),
+  organization: trimmedOptionalString(),
   temperature: z.number().min(0).max(2).default(0.2),
   maxTokens: z.number().int().min(32).max(8192).default(600),
   requestTimeoutMs: z.number().int().min(1000).max(120000).default(30000),
@@ -17,10 +50,10 @@ const providerSchema = z.object({
 
 const telegramSchema = z.object({
   enabled: z.boolean().default(false),
-  botToken: z.string().optional(),
+  botToken: trimmedOptionalString(),
   pairingMode: z.enum(['first_message', 'secret', 'code']).default('first_message'),
-  pairingSecret: z.string().min(4).optional(),
-  onboardingCode: z.string().optional(),
+  pairingSecret: trimmedOptionalString(),
+  onboardingCode: trimmedOptionalString(),
   allowedChatIds: z.array(z.string()).default([]),
   pollIntervalMs: z.number().int().min(1000).max(10000).default(2000),
 });
@@ -30,7 +63,7 @@ const monitoringSchema = z.object({
   dailyMonitoringTime: z.string().regex(/^([01]\d|2[0-3]):([0-5]\d)$/).default('09:00'),
   timezone: z.string().default('America/New_York'),
   includeLogs: z.boolean().default(false),
-  logFilePath: z.string().optional(),
+  logFilePath: trimmedOptionalString(),
   maxLogLines: z.number().int().min(50).max(5000).default(300),
 });
 
@@ -56,7 +89,8 @@ const healingCommandSchema = z.object({
 const selfHealingSchema = z.object({
   enabled: z.boolean().default(false),
   maxActionsPerDay: z.number().int().min(1).max(50).default(5),
-  commands: z.array(healingCommandSchema).default([]),
+  // Homebridge UI can save placeholder rows; we sanitize these in normalizeConfig.
+  commands: z.array(z.unknown()).default([]),
 });
 
 const automationSchema = z.object({
@@ -69,21 +103,34 @@ const automationSchema = z.object({
 
 const rootSchema = z.object({
   name: z.string().default('LLM Control'),
-  provider: providerSchema,
+  provider: providerSchema.default({}),
   messaging: telegramSchema.default({ enabled: false }),
   monitoring: monitoringSchema.default({}),
   watchdog: watchdogSchema.default({}),
   selfHealing: selfHealingSchema.default({}),
-  automations: z.array(automationSchema).default([]),
+  // Homebridge UI can save placeholder rows; we sanitize these in normalizeConfig.
+  automations: z.array(z.unknown()).default([]),
 });
 
 export type ProviderConfig = z.infer<typeof providerSchema>;
+export type ProviderConfigWithKey = ProviderConfig & { apiKey: string };
 export type MessagingConfig = z.infer<typeof telegramSchema>;
 export type MonitoringConfig = z.infer<typeof monitoringSchema>;
 export type WatchdogConfig = z.infer<typeof watchdogSchema>;
-export type SelfHealingConfig = z.infer<typeof selfHealingSchema>;
-export type AutomationConfig = z.infer<typeof automationSchema>;
-export type LLMControlNormalizedConfig = z.infer<typeof rootSchema>;
+export type HealingCommandConfig = z.output<typeof healingCommandSchema>;
+export type AutomationConfig = z.output<typeof automationSchema>;
+
+type ParsedRootConfig = z.infer<typeof rootSchema>;
+
+type ParsedSelfHealing = z.infer<typeof selfHealingSchema>;
+export type SelfHealingConfig = Omit<ParsedSelfHealing, 'commands'> & {
+  commands: HealingCommandConfig[];
+};
+
+export type LLMControlNormalizedConfig = Omit<ParsedRootConfig, 'selfHealing' | 'automations'> & {
+  selfHealing: SelfHealingConfig;
+  automations: AutomationConfig[];
+};
 
 export type LLMControlPlatformConfig = PlatformConfig & {
   provider?: unknown;
@@ -94,30 +141,103 @@ export type LLMControlPlatformConfig = PlatformConfig & {
   automations?: unknown;
 };
 
-export const normalizeConfig = (config: LLMControlPlatformConfig): LLMControlNormalizedConfig => {
+const isBlankString = (value: unknown): boolean => typeof value !== 'string' || value.trim() === '';
+
+const isPlaceholderObject = (value: unknown, placeholderKeys: string[]): boolean => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return placeholderKeys.every((key) => isBlankString(record[key]));
+};
+
+const sanitizeList = <S extends z.ZodTypeAny>(
+  list: unknown[],
+  itemSchema: S,
+  placeholderKeys: string[],
+  label: string,
+  log?: Logger,
+): Array<z.output<S>> => {
+  if (!Array.isArray(list)) {
+    return [];
+  }
+
+  const result: Array<z.output<S>> = [];
+  let ignoredInvalid = 0;
+
+  for (const entry of list) {
+    // Homebridge UI can save placeholder rows like {} or { enabled: true }. Ignore them.
+    if (isPlaceholderObject(entry, placeholderKeys)) {
+      continue;
+    }
+
+    const parsedEntry = itemSchema.safeParse(entry);
+    if (parsedEntry.success) {
+      result.push(parsedEntry.data);
+    } else {
+      ignoredInvalid += 1;
+    }
+  }
+
+  if (ignoredInvalid > 0) {
+    log?.warn(`[${PLATFORM_NAME}] Ignored ${ignoredInvalid} invalid item(s) from ${label}.`);
+  }
+
+  return result;
+};
+
+export const normalizeConfig = (config: LLMControlPlatformConfig, log?: Logger): LLMControlNormalizedConfig => {
   const parsed = rootSchema.safeParse(config);
   if (!parsed.success) {
     const issues = parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ');
     throw new Error(`Invalid configuration: ${issues}`);
   }
-  const normalized = parsed.data;
 
-  if (normalized.provider.preset === 'custom' && !normalized.provider.baseUrl) {
-    throw new Error('provider.baseUrl is required when provider.preset is custom');
+  const raw = parsed.data;
+
+  const messaging: MessagingConfig = { ...raw.messaging };
+  if (messaging.enabled && !messaging.botToken) {
+    log?.warn(`[${PLATFORM_NAME}] Telegram is enabled but messaging.botToken is missing.`);
   }
 
-  if (normalized.messaging.enabled && !normalized.messaging.botToken) {
-    throw new Error('messaging.botToken is required when messaging.enabled is true');
+  if (messaging.enabled && messaging.pairingMode === 'secret' && !messaging.pairingSecret) {
+    log?.warn(`[${PLATFORM_NAME}] Pairing mode is 'secret' but messaging.pairingSecret is missing. Falling back to auto-link.`);
+    messaging.pairingMode = 'first_message';
   }
 
-  if (normalized.messaging.enabled && normalized.messaging.pairingMode === 'secret' && !normalized.messaging.pairingSecret) {
-    throw new Error('messaging.pairingSecret is required when messaging.pairingMode is secret');
+  const provider: ProviderConfig = { ...raw.provider };
+  if (provider.preset === 'custom' && !provider.baseUrl) {
+    log?.warn(`[${PLATFORM_NAME}] Provider preset is 'custom' but provider.baseUrl is missing; LLM calls will be disabled.`);
   }
 
-  return normalized;
+  const commands = sanitizeList(
+    raw.selfHealing.commands,
+    healingCommandSchema,
+    ['id', 'label', 'command'],
+    'selfHealing.commands',
+    log,
+  );
+
+  const automations = sanitizeList(
+    raw.automations,
+    automationSchema,
+    ['name', 'scheduleCron', 'prompt'],
+    'automations',
+    log,
+  );
+
+  return {
+    ...raw,
+    provider,
+    messaging,
+    selfHealing: {
+      ...raw.selfHealing,
+      commands,
+    },
+    automations,
+  };
 };
 
-export type HealingCommandConfig = z.infer<typeof healingCommandSchema>;
 export type AutomationRule = {
   id: string;
   name: string;

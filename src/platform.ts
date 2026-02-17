@@ -52,15 +52,22 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     this.log.info(`[${PLATFORM_NAME}] Initializing plugin...`);
 
     try {
-      this.config = normalizeConfig(rawConfig);
+      this.config = normalizeConfig(rawConfig, this.log);
     } catch (error) {
       this.log.error(`[${PLATFORM_NAME}] Invalid config. Plugin disabled: ${(error as Error).message}`);
       return;
     }
 
     this.stateStore = new StateStore(log, api.user.storagePath());
-    this.llmClient = new OpenAIClient(log, this.config.provider);
     this.healthService = new HealthService(log, this.config, api.serverVersion);
+
+    if (this.config.provider.apiKey && (this.config.provider.preset !== 'custom' || this.config.provider.baseUrl)) {
+      this.llmClient = new OpenAIClient(log, { ...this.config.provider, apiKey: this.config.provider.apiKey });
+    } else {
+      this.log.warn(
+        `[${PLATFORM_NAME}] LLM provider is not fully configured (set provider.apiKey and baseUrl for custom). AI features will be disabled until configured.`,
+      );
+    }
 
     this.api.on('didFinishLaunching', () => {
       void this.bootstrap();
@@ -79,7 +86,7 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
   }
 
   private async bootstrap(): Promise<void> {
-    if (!this.config || !this.stateStore || !this.llmClient || !this.healthService) {
+    if (!this.config || !this.stateStore || !this.healthService) {
       return;
     }
 
@@ -100,6 +107,10 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       },
     );
     this.automationService.start();
+
+    if (this.config.messaging.enabled && !this.config.messaging.botToken) {
+      this.log.warn(`[${PLATFORM_NAME}] Telegram messaging is enabled but no bot token is set. Messaging is disabled.`);
+    }
 
     if (this.config.messaging.enabled && this.config.messaging.botToken) {
       this.telegramService = new TelegramService(
@@ -148,6 +159,10 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     this.stopSchedulers();
 
     if (this.config.monitoring.dailyMonitoringEnabled) {
+      if (!this.llmClient) {
+        this.log.warn(`[${PLATFORM_NAME}] Daily monitoring is enabled but LLM is not configured. Skipping schedule.`);
+        return;
+      }
       const [hour, minute] = this.config.monitoring.dailyMonitoringTime.split(':').map(Number);
       const expression = `${minute} ${hour} * * *`;
 
@@ -165,6 +180,10 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     }
 
     if (this.config.watchdog.enabled) {
+      if (!this.llmClient) {
+        this.log.warn(`[${PLATFORM_NAME}] Watchdog is enabled but LLM is not configured. Skipping watchdog timer.`);
+        return;
+      }
       const intervalMs = this.config.watchdog.checkIntervalMinutes * 60_000;
       this.watchdogTimer = setInterval(() => {
         void this.runWatchdog();
@@ -212,8 +231,12 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     reason: string,
     options?: { notifyMode?: 'auto' | 'always' | 'never' },
   ): Promise<string> {
-    if (!this.healthService || !this.llmClient || !this.config || !this.automationService) {
+    if (!this.healthService || !this.config || !this.automationService) {
       throw new Error('Plugin runtime is not initialized');
+    }
+
+    if (!this.llmClient) {
+      return `LLM provider is not configured. Set provider.apiKey in the plugin settings and restart Homebridge.`;
     }
 
     const snapshot = await this.healthService.collectSnapshot(
@@ -558,8 +581,12 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
   }
 
   private async answerQuestion(question: string): Promise<string> {
-    if (!this.llmClient || !this.healthService || !this.automationService) {
+    if (!this.healthService || !this.automationService) {
       throw new Error('Plugin runtime is not initialized');
+    }
+
+    if (!this.llmClient) {
+      return `LLM provider is not configured. Set provider.apiKey in the plugin settings and restart Homebridge.`;
     }
 
     const snapshot = await this.healthService.collectSnapshot(
