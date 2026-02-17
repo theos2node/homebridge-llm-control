@@ -35,6 +35,28 @@ const isNonEmptyString = (value: unknown): value is string => typeof value === '
 const getStringValue = (characteristic: HapCharacteristic): string | undefined =>
   isNonEmptyString(characteristic.value) ? characteristic.value.trim() : undefined;
 
+const HAP_BASE_UUID_SUFFIX = '-0000-1000-8000-0026BB765291';
+
+// HAP /accessories can return either long UUIDs (00000043-...) or short hex types ("43").
+const toLongUuid = (raw: string): string => {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+
+  if (/^[0-9a-fA-F]{1,8}$/.test(trimmed)) {
+    const padded = trimmed.toUpperCase().padStart(8, '0');
+    return `${padded}${HAP_BASE_UUID_SUFFIX}`;
+  }
+
+  if (/^[0-9a-fA-F]{32}$/.test(trimmed)) {
+    const upper = trimmed.toUpperCase();
+    return `${upper.slice(0, 8)}-${upper.slice(8, 12)}-${upper.slice(12, 16)}-${upper.slice(16, 20)}-${upper.slice(20)}`;
+  }
+
+  return trimmed.toUpperCase();
+};
+
 const getBoolValue = (value: unknown): boolean => {
   if (typeof value === 'boolean') {
     return value;
@@ -95,16 +117,16 @@ export class HomebridgeAccessoryControl {
     const { Service, Characteristic } = api.hap;
 
     this.serviceUuids = {
-      switch: Service.Switch.UUID,
-      light: Service.Lightbulb.UUID,
-      outlet: Service.Outlet.UUID,
+      switch: toLongUuid(Service.Switch.UUID),
+      light: toLongUuid(Service.Lightbulb.UUID),
+      outlet: toLongUuid(Service.Outlet.UUID),
     };
 
     this.characteristicUuids = {
-      name: Characteristic.Name.UUID,
-      on: Characteristic.On.UUID,
-      brightness: Characteristic.Brightness.UUID,
-      accessoryInformation: Service.AccessoryInformation.UUID,
+      name: toLongUuid(Characteristic.Name.UUID),
+      on: toLongUuid(Characteristic.On.UUID),
+      brightness: toLongUuid(Characteristic.Brightness.UUID),
+      accessoryInformation: toLongUuid(Service.AccessoryInformation.UUID),
     };
   }
 
@@ -246,7 +268,7 @@ export class HomebridgeAccessoryControl {
 
       for (const entityType of Object.keys(this.serviceUuids) as HbEntityType[]) {
         const serviceUuid = this.serviceUuids[entityType];
-        const services = accessory.services.filter((svc) => svc.type === serviceUuid);
+        const services = accessory.services.filter((svc) => toLongUuid(svc.type) === serviceUuid);
         for (const service of services) {
           const entity = this.buildEntityFromService(bridge, accessory.aid, accessoryName, entityType, service);
           if (entity) {
@@ -284,7 +306,7 @@ export class HomebridgeAccessoryControl {
     entityType: HbEntityType,
     service: HapService,
   ): HbEntity | undefined {
-    const onChar = service.characteristics.find((c) => c.type === this.characteristicUuids.on);
+    const onChar = service.characteristics.find((c) => toLongUuid(c.type) === this.characteristicUuids.on);
     if (!onChar) {
       return undefined;
     }
@@ -293,13 +315,13 @@ export class HomebridgeAccessoryControl {
       return undefined;
     }
 
-    const serviceNameChar = service.characteristics.find((c) => c.type === this.characteristicUuids.name);
+    const serviceNameChar = service.characteristics.find((c) => toLongUuid(c.type) === this.characteristicUuids.name);
     const serviceName = serviceNameChar ? getStringValue(serviceNameChar) : undefined;
     const name = serviceName && serviceName !== accessoryName ? `${accessoryName} - ${serviceName}` : accessoryName;
 
     const brightnessChar =
       entityType === 'light'
-        ? service.characteristics.find((c) => c.type === this.characteristicUuids.brightness)
+        ? service.characteristics.find((c) => toLongUuid(c.type) === this.characteristicUuids.brightness)
         : undefined;
 
     const id = `${bridge.username}:${aid}:${service.iid}`;
@@ -327,11 +349,11 @@ export class HomebridgeAccessoryControl {
   }
 
   private getAccessoryName(services: HapService[]): string | undefined {
-    const info = services.find((svc) => svc.type === this.characteristicUuids.accessoryInformation);
+    const info = services.find((svc) => toLongUuid(svc.type) === this.characteristicUuids.accessoryInformation);
     if (!info) {
       return undefined;
     }
-    const nameChar = info.characteristics.find((c) => c.type === this.characteristicUuids.name);
+    const nameChar = info.characteristics.find((c) => toLongUuid(c.type) === this.characteristicUuids.name);
     if (!nameChar) {
       return undefined;
     }
