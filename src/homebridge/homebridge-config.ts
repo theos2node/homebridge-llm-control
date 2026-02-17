@@ -34,12 +34,24 @@ export type HapBridgeEndpoint = {
 type AccessoryInfoJson = {
   username?: string;
   pincode?: string;
+  port?: number;
 };
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
-const asNumber = (value: unknown): number | undefined => (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
+const asNumber = (value: unknown): number | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
+};
 
 const asString = (value: unknown): string | undefined => (typeof value === 'string' && value.trim() ? value.trim() : undefined);
 
@@ -64,11 +76,15 @@ export const loadHomebridgeConfig = async (
 
 const normalizeAccessoryInfoId = (username: string): string => username.replace(/:/g, '').toUpperCase();
 
-const loadAccessoryInfoPin = async (log: Logger, storagePath: string, username: string): Promise<string | undefined> => {
+const loadAccessoryInfo = async (
+  log: Logger,
+  storagePath: string,
+  username: string,
+): Promise<{ pin?: string; port?: number }> => {
   const persistDir = path.join(storagePath, 'persist');
   const normalized = normalizeAccessoryInfoId(username);
 
-  const tryLoadFile = async (filePath: string): Promise<string | undefined> => {
+  const tryLoadFile = async (filePath: string): Promise<{ pin?: string; port?: number } | undefined> => {
     try {
       const raw = await readFile(filePath, 'utf8');
       const parsed = JSON.parse(raw) as unknown;
@@ -76,8 +92,13 @@ const loadAccessoryInfoPin = async (log: Logger, storagePath: string, username: 
         return undefined;
       }
 
-      const pincode = asString((parsed as AccessoryInfoJson).pincode);
-      return pincode;
+      const record = parsed as AccessoryInfoJson;
+      const pincode = asString(record.pincode);
+      const port = asNumber(record.port);
+      if (!pincode && !port) {
+        return undefined;
+      }
+      return { pin: pincode, port };
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') {
@@ -89,9 +110,9 @@ const loadAccessoryInfoPin = async (log: Logger, storagePath: string, username: 
 
   // Fast-path: the common naming convention used by HAP-NodeJS.
   const directPath = path.join(persistDir, `AccessoryInfo.${normalized}.json`);
-  const directPin = await tryLoadFile(directPath);
-  if (directPin) {
-    return directPin;
+  const directInfo = await tryLoadFile(directPath);
+  if (directInfo) {
+    return directInfo;
   }
 
   // Fallback: scan persist dir for matching AccessoryInfo.*.json.
@@ -102,9 +123,9 @@ const loadAccessoryInfoPin = async (log: Logger, storagePath: string, username: 
       if (!file.toUpperCase().includes(normalized)) {
         continue;
       }
-      const pin = await tryLoadFile(path.join(persistDir, file));
-      if (pin) {
-        return pin;
+      const info = await tryLoadFile(path.join(persistDir, file));
+      if (info) {
+        return info;
       }
     }
   } catch (error) {
@@ -114,7 +135,7 @@ const loadAccessoryInfoPin = async (log: Logger, storagePath: string, username: 
     }
   }
 
-  return undefined;
+  return {};
 };
 
 export const discoverHapBridgeEndpoints = async (
@@ -126,12 +147,11 @@ export const discoverHapBridgeEndpoints = async (
 
   const mainBridge = config.bridge;
   const mainUsername = asString(mainBridge?.username);
-  const mainPort = asNumber(mainBridge?.port) ?? 51826;
   const mainName = asString(mainBridge?.name) ?? 'Homebridge';
 
-  const mainPin = mainUsername
-    ? (asString(mainBridge?.pin) ?? (await loadAccessoryInfoPin(log, storagePath, mainUsername)))
-    : undefined;
+  const mainAccessoryInfo = mainUsername ? await loadAccessoryInfo(log, storagePath, mainUsername) : undefined;
+  const mainPin = mainUsername ? (asString(mainBridge?.pin) ?? mainAccessoryInfo?.pin) : undefined;
+  const mainPort = asNumber(mainBridge?.port) ?? mainAccessoryInfo?.port ?? 51826;
 
   if (mainUsername && mainPin) {
     endpoints.push({
@@ -152,14 +172,18 @@ export const discoverHapBridgeEndpoints = async (
 
   const addChildBridge = async (bridge: HomebridgeChildBridgeConfig | undefined): Promise<void> => {
     const username = asString(bridge?.username);
-    const port = asNumber(bridge?.port);
     const name = asString(bridge?.name) ?? username ?? 'Child Bridge';
 
-    if (!username || !port) {
+    if (!username) {
       return;
     }
 
-    const pin = asString(bridge?.pin) ?? (await loadAccessoryInfoPin(log, storagePath, username)) ?? mainPin;
+    const accessoryInfo = await loadAccessoryInfo(log, storagePath, username);
+    const port = asNumber(bridge?.port) ?? accessoryInfo.port;
+    const pin = asString(bridge?.pin) ?? accessoryInfo.pin ?? mainPin;
+    if (!port) {
+      return;
+    }
     if (!pin) {
       return;
     }
