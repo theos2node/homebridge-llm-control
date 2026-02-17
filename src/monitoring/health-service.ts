@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import { Logger } from 'homebridge';
 import { AutomationRule, LLMControlNormalizedConfig } from '../settings';
 
@@ -57,11 +57,12 @@ export class HealthService {
           }
         }
 
+        const tailLower = tailLines.map((line) => line.toLowerCase());
         for (const pattern of this.config.watchdog.criticalPatterns) {
-          const patternRegex = new RegExp(pattern, 'i');
-          for (const line of tailLines) {
-            if (patternRegex.test(line)) {
-              criticalHits.push(line);
+          const needle = pattern.toLowerCase();
+          for (let index = 0; index < tailLower.length; index += 1) {
+            if (tailLower[index].includes(needle)) {
+              criticalHits.push(tailLines[index]);
             }
           }
         }
@@ -117,8 +118,19 @@ export class HealthService {
   }
 
   private async readTailLines(filePath: string, maxLines: number): Promise<string[]> {
-    const content = await readFile(filePath, 'utf8');
-    const lines = content.split(/\r?\n/);
-    return lines.slice(Math.max(0, lines.length - maxLines));
+    const file = await open(filePath, 'r');
+    try {
+      const stat = await file.stat();
+      const maxBytes = Math.min(stat.size, 1024 * 1024); // 1MB tail cap
+      const offset = Math.max(0, stat.size - maxBytes);
+
+      const buffer = Buffer.alloc(maxBytes);
+      const { bytesRead } = await file.read(buffer, 0, maxBytes, offset);
+      const content = buffer.toString('utf8', 0, bytesRead);
+      const lines = content.split(/\r?\n/);
+      return lines.slice(Math.max(0, lines.length - maxLines));
+    } finally {
+      await file.close();
+    }
   }
 }

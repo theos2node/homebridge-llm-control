@@ -16,7 +16,7 @@ import {
 } from './settings';
 import { OpenAIClient } from './llm/openai-client';
 import { StateStore, PersistentState } from './state/state-store';
-import { HealthService, HealthSnapshot } from './monitoring/health-service';
+import { HealthService } from './monitoring/health-service';
 import { TelegramService } from './messaging/telegram-service';
 import { AutomationService } from './automation/automation-service';
 
@@ -111,10 +111,16 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
         },
       );
 
-      await this.telegramService.start();
-      this.log.info(
-        `[${PLATFORM_NAME}] Telegram onboarding code: ${this.state.onboardingCode}. Send /start ${this.state.onboardingCode} to your bot.`,
-      );
+      try {
+        await this.telegramService.start();
+        this.log.info(
+          `[${PLATFORM_NAME}] Telegram onboarding code: ${this.state.onboardingCode}. Send /start ${this.state.onboardingCode} to your bot.`,
+        );
+      } catch (error) {
+        this.log.error(`[${PLATFORM_NAME}] Telegram start failed: ${(error as Error).message}`);
+        this.telegramService.stop();
+        this.telegramService = undefined;
+      }
     }
 
     this.startSchedulers();
@@ -136,7 +142,7 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       this.dailyMonitorTask = cron.schedule(
         expression,
         async () => {
-          await this.runHealthAnalysis('daily-monitor');
+          await this.runHealthAnalysis('daily-monitor', { notifyMode: 'always' });
         },
         { timezone: this.config.monitoring.timezone },
       );
@@ -190,7 +196,10 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     }
   }
 
-  private async runHealthAnalysis(reason: string): Promise<string> {
+  private async runHealthAnalysis(
+    reason: string,
+    options?: { notifyMode?: 'auto' | 'always' | 'never' },
+  ): Promise<string> {
     if (!this.healthService || !this.llmClient || !this.config || !this.automationService) {
       throw new Error('Plugin runtime is not initialized');
     }
@@ -227,6 +236,8 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     const analysis = await this.llmClient.analyzeHealth(systemPrompt, userPrompt);
     const actionResults = await this.executeHealingActions(analysis.suggestedActions);
 
+    this.log.info(`[${PLATFORM_NAME}] Health analysis (${reason}): ${analysis.status} - ${analysis.summary}`);
+
     const lines = [
       `Health analysis: ${analysis.status.toUpperCase()}`,
       `Summary: ${analysis.summary}`,
@@ -242,7 +253,11 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
 
     const message = lines.join('\n\n');
 
-    if (analysis.notify || analysis.status !== 'ok') {
+    const notifyMode = options?.notifyMode ?? 'auto';
+    const shouldNotify =
+      notifyMode === 'always' ? true : notifyMode === 'never' ? false : analysis.notify || analysis.status !== 'ok';
+
+    if (shouldNotify) {
       await this.sendNotification(message);
     }
 
@@ -378,13 +393,13 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
     }
 
     if (trimmed === '/health') {
-      const result = await this.runHealthAnalysis('manual-health-command');
+      const result = await this.runHealthAnalysis('manual-health-command', { notifyMode: 'never' });
       await this.telegramService.sendMessage(chatId, result);
       return;
     }
 
     if (trimmed === '/watchdog' || trimmed.toLowerCase() === 'watchdog') {
-      const result = await this.runHealthAnalysis('manual-watchdog-command');
+      const result = await this.runHealthAnalysis('manual-watchdog-command', { notifyMode: 'never' });
       await this.telegramService.sendMessage(chatId, result);
       return;
     }
@@ -558,14 +573,5 @@ export class LLMControlPlatform implements DynamicPlatformPlugin {
       '/automation remove <id>',
       '/automation toggle <id> <on|off>',
     ].join('\n');
-  }
-
-  // Helpful for future extensibility/testing.
-  getDebugSnapshot(): Pick<HealthSnapshot, 'process' | 'automations' | 'logSignals'> | undefined {
-    if (!this.healthService || !this.automationService) {
-      return undefined;
-    }
-
-    return undefined;
   }
 }

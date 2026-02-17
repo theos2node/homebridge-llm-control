@@ -37,24 +37,42 @@ export class OpenAIClient {
   }
 
   async analyzeHealth(systemPrompt: string, userPrompt: string): Promise<LLMAnalysisResult> {
-    const response = await this.client.chat.completions.create({
-      model: this.config.model,
-      temperature: 0,
-      max_tokens: this.config.maxTokens,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt },
-      ],
-    });
+    let raw: string | null | undefined;
 
-    const raw = response.choices[0]?.message?.content;
+    try {
+      const response = await this.client.chat.completions.create({
+        model: this.config.model,
+        temperature: 0,
+        max_tokens: this.config.maxTokens,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+      });
+      raw = response.choices[0]?.message?.content;
+    } catch (error) {
+      // Some OpenAI-compatible APIs don't support json_object mode; retry without it.
+      this.log.warn(`Health analysis JSON mode failed; retrying: ${(error as Error).message}`);
+      const response = await this.client.chat.completions.create({
+        model: this.config.model,
+        temperature: 0,
+        max_tokens: this.config.maxTokens,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+      });
+      raw = response.choices[0]?.message?.content;
+    }
+
     if (!raw) {
       throw new Error('Model returned an empty health analysis response');
     }
 
     try {
-      const parsed = JSON.parse(raw) as Partial<LLMAnalysisResult>;
+      const jsonCandidate = this.extractJsonCandidate(raw);
+      const parsed = JSON.parse(jsonCandidate) as Partial<LLMAnalysisResult>;
       return {
         status: parsed.status === 'critical' || parsed.status === 'warning' ? parsed.status : 'ok',
         summary: parsed.summary ?? 'No summary.',
@@ -73,5 +91,15 @@ export class OpenAIClient {
       this.log.error(`Failed to parse health analysis JSON: ${(error as Error).message}`);
       throw new Error(`Invalid JSON from model: ${raw}`);
     }
+  }
+
+  private extractJsonCandidate(text: string): string {
+    const trimmed = text.trim();
+    const first = trimmed.indexOf('{');
+    const last = trimmed.lastIndexOf('}');
+    if (first !== -1 && last !== -1 && last > first) {
+      return trimmed.slice(first, last + 1);
+    }
+    return trimmed;
   }
 }

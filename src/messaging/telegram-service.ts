@@ -25,7 +25,7 @@ export type TelegramMessageHandler = (message: {
 
 export class TelegramService {
   private running = false;
-  private pollingTimer: NodeJS.Timeout | undefined;
+  private pollLoopPromise: Promise<void> | undefined;
   private updateOffset = 0;
 
   constructor(
@@ -41,40 +41,49 @@ export class TelegramService {
     }
 
     this.running = true;
-    await this.pollOnce();
-    this.pollingTimer = setInterval(() => {
-      this.pollOnce().catch((error) => {
-        this.log.warn(`Telegram poll error: ${(error as Error).message}`);
-      });
-    }, this.pollIntervalMs);
-
+    this.pollLoopPromise = this.pollLoop();
     this.log.info('Telegram bot polling started.');
   }
 
   stop(): void {
     this.running = false;
-    if (this.pollingTimer) {
-      clearInterval(this.pollingTimer);
-      this.pollingTimer = undefined;
-    }
   }
 
   async sendMessage(chatId: string, text: string): Promise<void> {
-    const payload = {
-      chat_id: chatId,
-      text,
-      disable_web_page_preview: true,
-    };
+    for (const chunk of this.chunkMessage(text, 3900)) {
+      const payload = {
+        chat_id: chatId,
+        text: chunk,
+        disable_web_page_preview: true,
+      };
 
-    const response = await fetch(this.telegramUrl('sendMessage'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+      const response = await fetch(this.telegramUrl('sendMessage'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
 
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Telegram sendMessage failed (${response.status}): ${body}`);
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`Telegram sendMessage failed (${response.status}): ${body}`);
+      }
+    }
+  }
+
+  private async pollLoop(): Promise<void> {
+    while (this.running) {
+      const startedAt = Date.now();
+      try {
+        await this.pollOnce();
+      } catch (error) {
+        this.log.warn(`Telegram poll error: ${(error as Error).message}`);
+      }
+
+      const elapsed = Date.now() - startedAt;
+      const waitMs = Math.max(0, this.pollIntervalMs - elapsed);
+      if (waitMs > 0) {
+        await this.sleep(waitMs);
+      }
     }
   }
 
@@ -115,6 +124,33 @@ export class TelegramService {
         username,
       });
     }
+  }
+
+  private chunkMessage(message: string, maxLen: number): string[] {
+    if (message.length <= maxLen) {
+      return [message];
+    }
+
+    const chunks: string[] = [];
+    let remaining = message;
+    while (remaining.length > maxLen) {
+      let splitAt = remaining.lastIndexOf('\n', maxLen);
+      if (splitAt < maxLen * 0.5) {
+        splitAt = maxLen;
+      }
+      chunks.push(remaining.slice(0, splitAt));
+      remaining = remaining.slice(splitAt).trimStart();
+    }
+
+    if (remaining.length > 0) {
+      chunks.push(remaining);
+    }
+
+    return chunks;
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    await new Promise<void>((resolve) => setTimeout(resolve, ms));
   }
 
   private telegramUrl(pathPart: string): string {

@@ -269,7 +269,10 @@
       "expandable": true,
       "items": [
         "provider.preset",
-        "provider.apiKey",
+        {
+          "key": "provider.apiKey",
+          "type": "password"
+        },
         "provider.model",
         {
           "key": "provider.baseUrl",
@@ -289,6 +292,7 @@
         "messaging.enabled",
         {
           "key": "messaging.botToken",
+          "type": "password",
           "condition": "model.messaging && model.messaging.enabled"
         },
         {
