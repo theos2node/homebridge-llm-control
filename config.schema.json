@@ -1,0 +1,378 @@
+{
+  "pluginAlias": "LLMControl",
+  "pluginType": "platform",
+  "singular": true,
+  "headerDisplay": "Homebridge LLM Control lets you connect an LLM (OpenAI or compatible), use Telegram for chat/onboarding, run daily monitoring, watchdog checks, and safe self-healing actions.",
+  "footerDisplay": "Security note: use least-privilege API keys and only whitelist trusted self-healing commands.",
+  "schema": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "default": "LLM Control",
+        "required": true
+      },
+      "provider": {
+        "type": "object",
+        "title": "LLM Provider",
+        "properties": {
+          "preset": {
+            "type": "string",
+            "title": "Provider Preset",
+            "default": "openai",
+            "oneOf": [
+              {
+                "title": "OpenAI",
+                "enum": ["openai"]
+              },
+              {
+                "title": "Custom (OpenAI-compatible)",
+                "enum": ["custom"]
+              }
+            ],
+            "required": true
+          },
+          "apiKey": {
+            "type": "string",
+            "title": "API Key",
+            "required": true
+          },
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "default": "gpt-4.1-mini",
+            "required": true
+          },
+          "baseUrl": {
+            "type": "string",
+            "title": "Custom Base URL",
+            "placeholder": "https://api.example.com/v1"
+          },
+          "organization": {
+            "type": "string",
+            "title": "OpenAI Organization (optional)"
+          },
+          "temperature": {
+            "type": "number",
+            "title": "Temperature",
+            "default": 0.2,
+            "minimum": 0,
+            "maximum": 2
+          },
+          "maxTokens": {
+            "type": "integer",
+            "title": "Max Output Tokens",
+            "default": 600,
+            "minimum": 32,
+            "maximum": 8192
+          },
+          "requestTimeoutMs": {
+            "type": "integer",
+            "title": "Request Timeout (ms)",
+            "default": 30000,
+            "minimum": 1000,
+            "maximum": 120000
+          }
+        }
+      },
+      "messaging": {
+        "type": "object",
+        "title": "Messaging",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enable Telegram Messaging",
+            "default": false
+          },
+          "botToken": {
+            "type": "string",
+            "title": "Telegram Bot Token"
+          },
+          "onboardingCode": {
+            "type": "string",
+            "title": "Onboarding Code (optional override)"
+          },
+          "allowedChatIds": {
+            "type": "array",
+            "title": "Extra Allowed Chat IDs",
+            "items": {
+              "type": "string"
+            }
+          },
+          "pollIntervalMs": {
+            "type": "integer",
+            "title": "Telegram Poll Interval (ms)",
+            "default": 2000,
+            "minimum": 1000,
+            "maximum": 10000
+          }
+        }
+      },
+      "monitoring": {
+        "type": "object",
+        "title": "Monitoring",
+        "properties": {
+          "dailyMonitoringEnabled": {
+            "type": "boolean",
+            "title": "Enable Daily Monitoring",
+            "default": false
+          },
+          "dailyMonitoringTime": {
+            "type": "string",
+            "title": "Daily Monitoring Time (HH:MM)",
+            "default": "09:00"
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone",
+            "default": "America/New_York"
+          },
+          "includeLogs": {
+            "type": "boolean",
+            "title": "Include Log Signals",
+            "default": false
+          },
+          "logFilePath": {
+            "type": "string",
+            "title": "Homebridge Log File Path",
+            "placeholder": "/var/lib/homebridge/homebridge.log"
+          },
+          "maxLogLines": {
+            "type": "integer",
+            "title": "Max Log Lines to Analyze",
+            "default": 300,
+            "minimum": 50,
+            "maximum": 5000
+          }
+        }
+      },
+      "watchdog": {
+        "type": "object",
+        "title": "Watchdog",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enable Watchdog",
+            "default": false
+          },
+          "checkIntervalMinutes": {
+            "type": "integer",
+            "title": "Check Interval (minutes)",
+            "default": 10,
+            "minimum": 1,
+            "maximum": 120
+          },
+          "criticalPatterns": {
+            "type": "array",
+            "title": "Critical Log Patterns",
+            "items": {
+              "type": "string"
+            },
+            "default": [
+              "UnhandledPromiseRejection",
+              "FATAL",
+              "out of memory",
+              "bridge is not running"
+            ]
+          },
+          "autoTriggerOnCritical": {
+            "type": "boolean",
+            "title": "Auto Trigger LLM Investigation",
+            "default": true
+          }
+        }
+      },
+      "selfHealing": {
+        "type": "object",
+        "title": "Self-Healing",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enable Self-Healing",
+            "default": false
+          },
+          "maxActionsPerDay": {
+            "type": "integer",
+            "title": "Max Actions Per Day",
+            "default": 5,
+            "minimum": 1,
+            "maximum": 50
+          },
+          "commands": {
+            "type": "array",
+            "title": "Allowed Commands",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "title": "Command ID"
+                },
+                "label": {
+                  "type": "string",
+                  "title": "Label"
+                },
+                "command": {
+                  "type": "string",
+                  "title": "Shell Command"
+                },
+                "cooldownMinutes": {
+                  "type": "integer",
+                  "title": "Cooldown (minutes)",
+                  "default": 60,
+                  "minimum": 0,
+                  "maximum": 1440
+                }
+              }
+            }
+          }
+        }
+      },
+      "automations": {
+        "type": "array",
+        "title": "Configured Automations",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string",
+              "title": "Automation ID (optional)"
+            },
+            "name": {
+              "type": "string",
+              "title": "Name"
+            },
+            "scheduleCron": {
+              "type": "string",
+              "title": "Cron Schedule",
+              "placeholder": "*/30 * * * *"
+            },
+            "prompt": {
+              "type": "string",
+              "title": "Prompt"
+            },
+            "enabled": {
+              "type": "boolean",
+              "title": "Enabled",
+              "default": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "form": [
+    "name",
+    {
+      "type": "fieldset",
+      "title": "LLM Provider",
+      "expandable": true,
+      "items": [
+        "provider.preset",
+        "provider.apiKey",
+        "provider.model",
+        {
+          "key": "provider.baseUrl",
+          "condition": "model.provider && model.provider.preset === 'custom'"
+        },
+        "provider.organization",
+        "provider.temperature",
+        "provider.maxTokens",
+        "provider.requestTimeoutMs"
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Messaging (Telegram)",
+      "expandable": true,
+      "items": [
+        "messaging.enabled",
+        {
+          "key": "messaging.botToken",
+          "condition": "model.messaging && model.messaging.enabled"
+        },
+        {
+          "key": "messaging.onboardingCode",
+          "condition": "model.messaging && model.messaging.enabled"
+        },
+        {
+          "key": "messaging.allowedChatIds",
+          "condition": "model.messaging && model.messaging.enabled"
+        },
+        {
+          "key": "messaging.pollIntervalMs",
+          "condition": "model.messaging && model.messaging.enabled"
+        }
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Monitoring",
+      "expandable": true,
+      "items": [
+        "monitoring.dailyMonitoringEnabled",
+        {
+          "key": "monitoring.dailyMonitoringTime",
+          "condition": "model.monitoring && model.monitoring.dailyMonitoringEnabled"
+        },
+        {
+          "key": "monitoring.timezone",
+          "condition": "model.monitoring && model.monitoring.dailyMonitoringEnabled"
+        },
+        "monitoring.includeLogs",
+        {
+          "key": "monitoring.logFilePath",
+          "condition": "model.monitoring && model.monitoring.includeLogs"
+        },
+        {
+          "key": "monitoring.maxLogLines",
+          "condition": "model.monitoring && model.monitoring.includeLogs"
+        }
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Watchdog",
+      "expandable": true,
+      "items": [
+        "watchdog.enabled",
+        {
+          "key": "watchdog.checkIntervalMinutes",
+          "condition": "model.watchdog && model.watchdog.enabled"
+        },
+        {
+          "key": "watchdog.criticalPatterns",
+          "condition": "model.watchdog && model.watchdog.enabled"
+        },
+        {
+          "key": "watchdog.autoTriggerOnCritical",
+          "condition": "model.watchdog && model.watchdog.enabled"
+        }
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Self-Healing",
+      "expandable": true,
+      "items": [
+        "selfHealing.enabled",
+        {
+          "key": "selfHealing.maxActionsPerDay",
+          "condition": "model.selfHealing && model.selfHealing.enabled"
+        },
+        {
+          "key": "selfHealing.commands",
+          "condition": "model.selfHealing && model.selfHealing.enabled"
+        }
+      ]
+    },
+    {
+      "type": "fieldset",
+      "title": "Automations",
+      "expandable": true,
+      "items": [
+        "automations"
+      ]
+    }
+  ]
+}
