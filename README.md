@@ -6,7 +6,21 @@
 
 Project page (GitHub Pages): https://theos2node.github.io/homebridge-llm-control/
 
-LLM-powered operations plugin for Homebridge with:
+LLM-powered operations plugin for Homebridge: chat control, health monitoring, watchdog checks, scheduled jobs, and guardrailed self-healing for smart-home infrastructure.
+
+## Why it is useful
+
+Homebridge is powerful, but day-to-day operation often still means checking logs, restarting services, watching for failures, and manually controlling accessories. This plugin turns those operations into chat-driven workflows while keeping risky actions behind explicit configuration, allowlists, cooldowns, and quotas.
+
+## Portfolio summary
+
+- **Platform:** Homebridge plugin written in TypeScript
+- **Interfaces:** Telegram, ntfy, Discord webhooks, Homebridge UI/config
+- **Automation:** scheduled jobs, one-shot actions, watchdog checks, daily monitoring
+- **Safety model:** allowlisted commands, cooldowns, daily action limits, runtime config redaction
+- **Distribution:** npm/Homebridge-compatible package with CI and release workflow
+
+## Capabilities
 
 - LLM provider presets (`OpenAI` + custom OpenAI-compatible endpoint)
 - Telegram onboarding + chat control
