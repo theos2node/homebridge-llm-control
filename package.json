@@ -13,9 +13,11 @@
   "scripts": {
     "clean": "rm -rf dist",
     "build": "npm run clean && tsc -p tsconfig.json",
+    "check": "npm run lint && npm run typecheck && npm test && npm run pack:check",
     "lint": "eslint 'src/**/*.ts'",
+    "pack:check": "npm pack --dry-run",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck",
+    "test": "npm run build && node --test test/*.test.cjs",
     "prepare": "npm run build"
   },
   "keywords": [
@@ -28,7 +30,7 @@
   ],
   "author": "Theo",
   "license": "MIT",
-  "homepage": "https://github.com/theos2node/homebridge-llm-control#readme",
+  "homepage": "https://theos2node.github.io/homebridge-llm-control/",
   "bugs": {
     "url": "https://github.com/theos2node/homebridge-llm-control/issues"
   },

@@ -1,18 +1,20 @@
-# homebridge-llm-control
+# Homebridge LLM Control
 
 [![npm version](https://img.shields.io/npm/v/homebridge-llm-control)](https://www.npmjs.com/package/homebridge-llm-control)
 [![CI](https://github.com/theos2node/homebridge-llm-control/actions/workflows/ci.yml/badge.svg)](https://github.com/theos2node/homebridge-llm-control/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Project page (GitHub Pages): https://theos2node.github.io/homebridge-llm-control/
+[Project page](https://theos2node.github.io/homebridge-llm-control/) ·
+[npm package](https://www.npmjs.com/package/homebridge-llm-control) ·
+[Security policy](SECURITY.md)
 
 LLM-powered operations plugin for Homebridge: chat control, health monitoring, watchdog checks, scheduled jobs, and guardrailed self-healing for smart-home infrastructure.
 
 ## Why it is useful
 
-Homebridge is powerful, but day-to-day operation often still means checking logs, restarting services, watching for failures, and manually controlling accessories. This plugin turns those operations into chat-driven workflows while keeping risky actions behind explicit configuration, allowlists, cooldowns, and quotas.
+Day-to-day Homebridge operation often means checking logs, restarting services, watching for failures, and manually controlling accessories. This plugin puts those tasks behind chat commands while keeping risky actions behind explicit configuration, allowlists, cooldowns, and quotas.
 
-## Portfolio summary
+## At a glance
 
 - **Platform:** Homebridge plugin written in TypeScript
 - **Interfaces:** Telegram, ntfy, Discord webhooks, Homebridge UI/config
@@ -35,9 +37,10 @@ Homebridge is powerful, but day-to-day operation often still means checking logs
 - Chat-managed runtime skills (propose/approve workflow) for safe command expansion
 - Config-based and chat-created scheduled automations
 
-## Homebridge Store readiness
+## Package status
 
-This package is Homebridge store compatible when published to npm:
+Version 1.4.0 is published on npm. The package follows Homebridge's dynamic
+platform conventions:
 
 - package name starts with `homebridge-`
 - includes keyword `homebridge-plugin`
@@ -45,8 +48,6 @@ This package is Homebridge store compatible when published to npm:
 - declares Homebridge platform metadata in `package.json`
 
 ## Installation
-
-After publishing:
 
 ```bash
 npm install -g homebridge-llm-control
@@ -59,7 +60,7 @@ Or use Homebridge UI search for `homebridge-llm-control`.
 You can configure this plugin either:
 
 - In Homebridge UI plugin settings / `config.json`, or
-- Directly from Telegram (recommended for “dirt simple” setup): `/setup` and `/config ...`
+- Directly from Telegram for the quickest setup: `/setup` and `/config ...`
 
 ### Example config
 
@@ -260,12 +261,15 @@ Notes:
 ## Local development
 
 ```bash
-npm install
-npm run lint
-npm run build
+npm ci
+npm run check
 ```
 
-## Publish to npm/Homebridge store
+The release gate runs linting, strict type-checking, unit tests, the production
+build, and an npm package dry run. CI repeats it across every declared Node.js
+major version.
+
+## Publishing
 
 ```bash
 npm login
