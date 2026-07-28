@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <title>Homebridge LLM Control</title>
-  <rect width="64" height="64" rx="16" fill="#11100f"/>
-  <path d="M17 15h9v12h12V15h9v34h-9V36H26v13h-9z" fill="#f4f0e9"/>
-  <circle cx="51" cy="13" r="5" fill="#e45f39"/>
-</svg>
