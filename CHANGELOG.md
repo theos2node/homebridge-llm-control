@@ -9,6 +9,10 @@ All notable changes to this project will be documented in this file.
 - Made model-response parsing brace- and quoted-string-aware.
 - Prevented invalid model responses from being included in thrown errors.
 - Added a multi-version Node.js release gate and Dependabot configuration.
+- Migrated linting to ESLint's flat configuration and refreshed the development
+  lockfile to resolve all reported dependency advisories.
+- Limited routine Dependabot version updates to minor and patch releases so
+  major upgrades remain explicit review work.
 - Updated the project page and maintainer documentation.
 
 ## v1.4.0
