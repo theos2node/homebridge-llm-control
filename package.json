@@ -48,7 +48,7 @@
   "dependencies": {
     "node-cron": "^4.2.1",
     "openai": "^5.15.0",
-    "zod": "^3.25.76"
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "homebridge": ">=1.8.0"
