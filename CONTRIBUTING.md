@@ -2,23 +2,24 @@
 
 Thanks for contributing to `homebridge-llm-control`.
 
-## Local Setup
+## Local setup
 
 Requirements:
 
 - Node.js 20+ recommended
 - npm
 
-Commands:
+Install and run the complete release gate:
 
 ```bash
-npm install
-npm test
-npm run lint
-npm run build
+npm ci
+npm run check
 ```
 
-## Development Notes
+`npm run check` runs linting, strict type-checking, unit tests, the production
+build, and an npm package dry run.
+
+## Development notes
 
 - This plugin is a Homebridge **platform** plugin.
 - The chat UX is intentionally kept simple (text commands first).
@@ -42,8 +43,7 @@ Please include:
 Project uses npm publishing for Homebridge Store distribution:
 
 1. Bump `package.json` version (and `package-lock.json`)
-2. `npm run build && npm test`
+2. `npm run check`
 3. Tag the release: `git tag vX.Y.Z`
 4. Push: `git push origin main --tags`
 5. Publish: `npm publish --access public`
-

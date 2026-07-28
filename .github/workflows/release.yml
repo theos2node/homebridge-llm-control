@@ -14,19 +14,19 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install
         run: npm ci
 
-      - name: Build
-        run: npm run build
+      - name: Validate
+        run: npm run check
 
       - name: Publish (Skip If Already Published)
         shell: bash
@@ -38,8 +38,8 @@ jobs:
           echo "Package: ${PKG_NAME}@${PKG_VERSION}"
 
           if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "NPM_TOKEN (NODE_AUTH_TOKEN) is not configured in GitHub secrets; skipping publish."
-            exit 0
+            echo "NPM_TOKEN (NODE_AUTH_TOKEN) is not configured."
+            exit 1
           fi
 
           if npm view "${PKG_NAME}@${PKG_VERSION}" version --registry https://registry.npmjs.org/ >/dev/null 2>&1; then
@@ -47,6 +47,6 @@ jobs:
             exit 0
           fi
 
-          npm publish --access public
+          npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

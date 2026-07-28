@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { Logger } from 'homebridge';
 import { ProviderConfig } from '../settings';
+import { extractFirstJsonObject } from './json';
 
 export type LLMAnalysisResult = {
   status: 'ok' | 'warning' | 'critical';
@@ -70,7 +71,7 @@ export class OpenAIClient {
       throw new Error('Model returned an empty JSON response');
     }
 
-    const jsonCandidate = this.extractJsonCandidate(raw);
+    const jsonCandidate = extractFirstJsonObject(raw);
     return JSON.parse(jsonCandidate) as unknown;
   }
 
@@ -109,7 +110,7 @@ export class OpenAIClient {
     }
 
     try {
-      const jsonCandidate = this.extractJsonCandidate(raw);
+      const jsonCandidate = extractFirstJsonObject(raw);
       const parsed = JSON.parse(jsonCandidate) as Partial<LLMAnalysisResult>;
       return {
         status: parsed.status === 'critical' || parsed.status === 'warning' ? parsed.status : 'ok',
@@ -127,17 +128,7 @@ export class OpenAIClient {
       };
     } catch (error) {
       this.log.error(`Failed to parse health analysis JSON: ${(error as Error).message}`);
-      throw new Error(`Invalid JSON from model: ${raw}`);
+      throw new Error('Model returned an invalid health analysis response');
     }
-  }
-
-  private extractJsonCandidate(text: string): string {
-    const trimmed = text.trim();
-    const first = trimmed.indexOf('{');
-    const last = trimmed.lastIndexOf('}');
-    if (first !== -1 && last !== -1 && last > first) {
-      return trimmed.slice(first, last + 1);
-    }
-    return trimmed;
   }
 }

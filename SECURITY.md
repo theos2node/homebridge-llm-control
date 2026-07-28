@@ -4,10 +4,9 @@
 
 If you believe you have found a security issue, please do **not** open a public GitHub issue.
 
-Instead:
-
-1. Create a private report via GitHub Security Advisories (preferred), or
-2. Email the maintainer with details and reproduction steps.
+Use this repository's private vulnerability reporting form. Do not include
+credentials, bot tokens, webhook URLs, chat IDs, Homebridge PINs, or log
+archives in a public issue.
 
 Include:
 
@@ -20,4 +19,3 @@ Include:
 
 This plugin can be configured to execute allowlisted shell commands ("skills"). Treat access to the chat channel
 as equivalent to privileged access to your Homebridge host.
-

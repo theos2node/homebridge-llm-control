@@ -3,169 +3,184 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#11100f" />
     <title>Homebridge LLM Control</title>
     <meta
       name="description"
-      content="Chat with Homebridge using an LLM: control what Homebridge already exposes, schedule actions, monitor health, and run guardrailed skills."
+      content="Chat-based Homebridge control, monitoring, schedules, and carefully bounded recovery actions."
     />
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <div class="wrap">
-      <div class="header">
-        <h1>Homebridge LLM Control</h1>
-        <div class="tagline">An LLM chat control plane for Homebridge (no Home app automations required)</div>
-      </div>
-
-      <div class="nav">
-        <a href="#what">What</a>
-        <span class="sep">|</span>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Homebridge LLM Control home">
+        <span class="brand-mark" aria-hidden="true">H</span>
+        <span>Homebridge LLM Control</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="#capabilities">Capabilities</a>
         <a href="#setup">Setup</a>
-        <span class="sep">|</span>
-        <a href="#talk">Talk To It</a>
-        <span class="sep">|</span>
-        <a href="#recipes">Recipes</a>
-        <span class="sep">|</span>
-        <a href="#links">Links</a>
-      </div>
+        <a href="#safety">Safety</a>
+      </nav>
+      <a class="header-link" href="https://github.com/theos2node/homebridge-llm-control">View source</a>
+    </header>
 
-      <div class="box">
-        <h2 id="what">What This Plugin Does</h2>
-
-        <ul>
-          <li>Lets you message Homebridge like a person and get things done</li>
-          <li>Controls what Homebridge already exposes (lights, switches, outlets, etc.)</li>
-          <li>Schedules one-shot actions (like “turn off all lights in 30 minutes”)</li>
-          <li>Runs health checks, daily monitoring, and watchdog investigations</li>
-          <li>Can run guardrailed “skills” (approved shell commands) when needed</li>
-          <li>Chat options: ntfy + Telegram (two-way) and Discord webhook (notifications)</li>
-        </ul>
-
-        <div class="note">
-          <strong>btw:</strong> this plugin can only control devices that are <em>present in Homebridge</em>. If
-          something only exists in the iOS Home app (native HomeKit) and is not exposed through a Homebridge plugin, it
-          will not appear here.
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Open-source Homebridge plugin</p>
+          <h1>Operate Homebridge from chat without handing the model the keys.</h1>
+          <p class="lede">
+            Control existing accessories, schedule one-off work, review health,
+            and run approved recovery commands from Telegram or ntfy. The model
+            can suggest actions; the plugin decides what is actually allowed.
+          </p>
+          <div class="actions">
+            <a class="button primary" href="https://www.npmjs.com/package/homebridge-llm-control">
+              Install from npm
+            </a>
+            <a class="button secondary" href="https://github.com/theos2node/homebridge-llm-control#installation">
+              Read the setup guide
+            </a>
+          </div>
+          <dl class="proof">
+            <div>
+              <dt>1.4.0</dt>
+              <dd>Current npm release</dd>
+            </div>
+            <div>
+              <dt>4</dt>
+              <dd>Supported Node majors</dd>
+            </div>
+            <div>
+              <dt>MIT</dt>
+              <dd>Open-source license</dd>
+            </div>
+          </dl>
         </div>
 
-        <div class="note">
-          If your “real” devices live only in HomeKit, you can add a HomeKit-to-Homebridge bridge.
-          One option: <a href="https://github.com/minamoanes/homebridge-homekit-control">homebridge-homekit-control</a>
-          (use carefully: importing devices can create duplicates and can confuse your Home app if you already have the
-          same devices bridged elsewhere).
+        <div class="terminal" aria-label="Example Homebridge chat session">
+          <div class="terminal-bar">
+            <span></span><span></span><span></span>
+            <strong>Homebridge</strong>
+          </div>
+          <div class="terminal-body">
+            <p class="message user">Turn off the downstairs lights in 30 minutes.</p>
+            <p class="message system">
+              Scheduled 4 lights for 10:42 PM.<br />
+              Job IDs: hbllm-7d21…hbllm-7d24
+            </p>
+            <p class="message user">Anything unhealthy?</p>
+            <p class="message system">
+              Bridge is reachable. No critical log patterns found. One plugin
+              restart was recorded this morning.
+            </p>
+            <div class="guardrail">
+              <span aria-hidden="true">✓</span>
+              <span>Actions checked against configured devices and limits</span>
+            </div>
+          </div>
         </div>
-      </div>
+      </section>
 
-      <div class="box">
-        <h2 id="setup">Setup (Fast)</h2>
+      <section class="section" id="capabilities">
+        <div class="section-heading">
+          <p class="eyebrow">What it handles</p>
+          <h2>Useful operations, with the boundary visible.</h2>
+          <p>
+            This plugin works with accessories already exposed by Homebridge.
+            It does not reach into native HomeKit devices that Homebridge
+            cannot see.
+          </p>
+        </div>
 
-        <p>
-          Install the plugin, pick a chat channel, restart Homebridge, then talk to it. That’s it.
-        </p>
+        <div class="feature-grid">
+          <article>
+            <span class="feature-number">01</span>
+            <h3>Accessory control</h3>
+            <p>List, filter, switch, dim, and schedule existing lights, switches, and outlets.</p>
+          </article>
+          <article>
+            <span class="feature-number">02</span>
+            <h3>Health and watchdogs</h3>
+            <p>Review service state and logs on demand or on a configured daily schedule.</p>
+          </article>
+          <article>
+            <span class="feature-number">03</span>
+            <h3>Messaging</h3>
+            <p>Use Telegram or ntfy for two-way control and Discord webhooks for notifications.</p>
+          </article>
+          <article>
+            <span class="feature-number">04</span>
+            <h3>Approved commands</h3>
+            <p>Run named shell commands only after they have been added to the allowlist.</p>
+          </article>
+        </div>
+      </section>
 
-        <ul>
-          <li><strong>ntfy (recommended):</strong> enable ntfy, restart, subscribe to the topic shown in <code>/status</code></li>
-          <li><strong>Telegram:</strong> create a bot token, enable Telegram, restart, message the bot</li>
-          <li><strong>Discord webhook:</strong> paste webhook URL for notifications (not interactive chat)</li>
-        </ul>
+      <section class="section setup-section" id="setup">
+        <div class="section-heading compact">
+          <p class="eyebrow">Quick start</p>
+          <h2>Install, choose a channel, and verify the boundary.</h2>
+        </div>
 
-        <p class="small">
-          First message after a restart should be: “Hey it’s set up. Homebridge LLM Control is online.”
-        </p>
-      </div>
-
-      <div class="box">
-        <h2 id="talk">Talk To It (Natural Language)</h2>
-
-        <p>These are good first messages to send:</p>
-
-        <pre><code>What devices can you control right now?
-Turn off all the lights.
-Turn on all the lights at 30% brightness.
-Turn off everything in 30 minutes.
-
-Is Homebridge healthy? Anything broken?
-What changed in the logs today?</code></pre>
-
-        <h3>If You Like Commands</h3>
-        <pre><code>/help
-/status
-
+        <ol class="steps">
+          <li>
+            <span>1</span>
+            <div>
+              <h3>Install the package</h3>
+              <pre><code>npm install -g homebridge-llm-control</code></pre>
+            </div>
+          </li>
+          <li>
+            <span>2</span>
+            <div>
+              <h3>Configure Telegram or ntfy</h3>
+              <p>Use the Homebridge UI, then restart the bridge and pair the private chat channel.</p>
+            </div>
+          </li>
+          <li>
+            <span>3</span>
+            <div>
+              <h3>Inspect before automating</h3>
+              <pre><code>/status
 /hb list
-/hb on lights
-/hb off lights
-/hb schedule 30m off lights
+/health</code></pre>
+            </div>
+          </li>
+        </ol>
+      </section>
 
-/health
-/watchdog</code></pre>
-
-        <h3>Common “Why Can’t You See My Devices?”</h3>
-        <ul>
-          <li>If <code>/hb list</code> looks empty, it’s not an LLM problem: Homebridge itself isn’t exposing those devices.</li>
-          <li>Fix is to add/configure the right Homebridge plugins so the devices show up in Homebridge.</li>
-          <li>If those devices are only in HomeKit, see the HomeKit import option above.</li>
-        </ul>
-      </div>
-
-      <div class="box">
-        <h2 id="recipes">Recipes (Useful Stuff)</h2>
-
-        <h3>One-Shot Schedules</h3>
-        <pre><code>Turn off all the lights in 20 minutes.
-Restart Homebridge in 2 hours.</code></pre>
-
-        <h3>Recurring Automations (LLM-Driven)</h3>
-        <p class="small">
-          Runtime automations live inside this plugin. They are cron-based and can be created/removed in chat.
-        </p>
-        <pre><code>/automation list
-/automation add Nightly lights off | 0 1 * * * | Turn off all lights and switches.
-/automation add Morning check | 0 8 * * * | Give me a short health report and highlight anything unusual.
-/automation toggle &lt;id&gt; off
-/automation remove &lt;id&gt;</code></pre>
-
-        <h3>Daily Monitoring + Watchdog</h3>
-        <pre><code>Enable daily monitoring at 9:00am.
-Enable the watchdog. If there is a critical error, investigate and notify me.</code></pre>
-        <pre><code>/config set monitoring.dailyMonitoringEnabled true
-/config set monitoring.dailyMonitoringTime 09:00
-/config set watchdog.enabled true</code></pre>
-
-        <h3>“Restart Homebridge Every 12 Hours”</h3>
-        <pre><code>Restart Homebridge every 12 hours and notify me when it restarts.</code></pre>
-        <pre><code>/config set operations.scheduledRestartEnabled true
-/config set operations.restartEveryHours 12
-/config set operations.notifyOnHomebridgeRestart true</code></pre>
-
-        <h3>One-Off Scripts (Guardrailed Skills)</h3>
-        <p class="small">
-          Skills are approved shell commands. They’re how you do powerful one-offs without giving an LLM unlimited shell
-          access.
-        </p>
-        <pre><code>/skills
-/skill propose Restart Homebridge | sudo hb-service restart | 60
-/skill pending
-/skill approve &lt;proposalId&gt; yes
-/run &lt;skillId&gt;</code></pre>
-
-        <div class="note">
-          Safety: skills run only from an allowlist, with cooldowns/quotas. Your chat token is effectively admin access.
+      <section class="section safety-section" id="safety">
+        <div class="safety-copy">
+          <p class="eyebrow">Safety model</p>
+          <h2>The model proposes. Deterministic code enforces.</h2>
+          <p>
+            Device identifiers must match Homebridge’s current inventory.
+            Shell commands must match an approved skill. Cooldowns and daily
+            quotas are checked before execution, and newly proposed skills stay
+            pending until a person approves them.
+          </p>
+          <a href="https://github.com/theos2node/homebridge-llm-control#safety-model">
+            Read the complete safety model →
+          </a>
         </div>
-      </div>
-
-      <div class="box">
-        <h2 id="links">Links</h2>
-        <ul>
-          <li>GitHub repo: <a href="https://github.com/theos2node/homebridge-llm-control">theos2node/homebridge-llm-control</a></li>
-          <li>npm package: <a href="https://www.npmjs.com/package/homebridge-llm-control">homebridge-llm-control</a></li>
-          <li>HomeKit import (optional): <a href="https://github.com/minamoanes/homebridge-homekit-control">minamoanes/homebridge-homekit-control</a></li>
+        <ul class="safety-list">
+          <li><strong>No arbitrary shell access</strong><span>Only configured command IDs can run.</span></li>
+          <li><strong>Explicit approval</strong><span>Model-proposed skills begin in a pending state.</span></li>
+          <li><strong>Rate limits</strong><span>Cooldowns and daily quotas apply to recovery actions.</span></li>
+          <li><strong>Redacted configuration</strong><span>Known token and webhook fields are masked in chat output.</span></li>
         </ul>
-      </div>
+      </section>
+    </main>
 
-      <div class="footer">
-        <div class="small">
-          MIT licensed. This page is intentionally simple. Full docs live in the repo README.
-        </div>
+    <footer>
+      <p>Built and maintained by Theo Pasquier. Released under the MIT License.</p>
+      <div>
+        <a href="https://github.com/theos2node/homebridge-llm-control">GitHub</a>
+        <a href="https://www.npmjs.com/package/homebridge-llm-control">npm</a>
+        <a href="https://github.com/theos2node/homebridge-llm-control/security">Security</a>
       </div>
-    </div>
+    </footer>
   </body>
 </html>
