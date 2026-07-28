@@ -47,7 +47,7 @@
   },
   "dependencies": {
     "node-cron": "^4.2.1",
-    "openai": "^5.15.0",
+    "openai": "^7.0.0",
     "zod": "^3.25.76"
   },
   "peerDependencies": {
