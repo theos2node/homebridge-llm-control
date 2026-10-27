@@ -1,5 +1,14 @@
 type PlainObject = Record<string, unknown>;
 
+const isUnsafeKey = (key: string): boolean =>
+  key === '__proto__' || key === 'constructor' || key === 'prototype';
+
+const assertSafePath = (path: string[]): void => {
+  if (path.some(isUnsafeKey)) {
+    throw new Error('Unsafe configuration path');
+  }
+};
+
 export const isPlainObject = (value: unknown): value is PlainObject =>
   Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
@@ -12,10 +21,12 @@ export const deepMerge = <T>(base: T, override: unknown): T => {
     return override as T;
   }
 
-  if (isPlainObject(base) && isPlainObject(override)) {
-    const result: PlainObject = { ...base };
+  if (isPlainObject(override)) {
+    const result: PlainObject = isPlainObject(base) ? { ...base } : {};
     for (const [key, value] of Object.entries(override)) {
-      result[key] = deepMerge((base as PlainObject)[key], value);
+      assertSafePath([key]);
+      const previous = isPlainObject(base) && Object.hasOwn(base, key) ? base[key] : undefined;
+      result[key] = deepMerge(previous, value);
     }
     return result as T;
   }
@@ -26,7 +37,7 @@ export const deepMerge = <T>(base: T, override: unknown): T => {
 export const getAtPath = (obj: unknown, path: string[]): unknown => {
   let current: unknown = obj;
   for (const part of path) {
-    if (!isPlainObject(current)) {
+    if (isUnsafeKey(part) || !isPlainObject(current) || !Object.hasOwn(current, part)) {
       return undefined;
     }
     current = current[part];
@@ -35,6 +46,7 @@ export const getAtPath = (obj: unknown, path: string[]): unknown => {
 };
 
 export const setAtPath = (obj: PlainObject, path: string[], value: unknown): void => {
+  assertSafePath(path);
   if (path.length === 0) {
     throw new Error('Path cannot be empty');
   }
@@ -42,7 +54,7 @@ export const setAtPath = (obj: PlainObject, path: string[], value: unknown): voi
   let current: PlainObject = obj;
   for (const part of path.slice(0, -1)) {
     const next = current[part];
-    if (!isPlainObject(next)) {
+    if (!Object.hasOwn(current, part) || !isPlainObject(next)) {
       current[part] = {};
     }
     current = current[part] as PlainObject;
@@ -51,6 +63,7 @@ export const setAtPath = (obj: PlainObject, path: string[], value: unknown): voi
 };
 
 export const unsetAtPath = (obj: PlainObject, path: string[]): void => {
+  assertSafePath(path);
   if (path.length === 0) {
     return;
   }
@@ -58,7 +71,7 @@ export const unsetAtPath = (obj: PlainObject, path: string[]): void => {
   let current: PlainObject = obj;
   for (const part of path.slice(0, -1)) {
     const next = current[part];
-    if (!isPlainObject(next)) {
+    if (!Object.hasOwn(current, part) || !isPlainObject(next)) {
       return;
     }
     current = next;
