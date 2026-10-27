@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Reject prototype-related configuration paths and merge keys, and prevent
+  configuration helpers from reading or changing inherited objects.
 - Added unit coverage for JSON extraction, runtime configuration, redaction,
   and Homebridge UI configuration normalization.
 - Made model-response parsing brace- and quoted-string-aware.

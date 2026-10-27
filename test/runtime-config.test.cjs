@@ -28,6 +28,35 @@ test('path helpers update and remove nested values', () => {
   assert.equal(getAtPath(value, ['monitoring', 'enabled']), undefined);
 });
 
+test('configuration paths reject prototype keys before changing any values', () => {
+  for (const key of ['__proto__', 'constructor', 'prototype']) {
+    const value = {};
+    assert.throws(() => setAtPath(value, ['nested', key, 'polluted'], true), /Unsafe configuration path/);
+    assert.deepEqual(value, {});
+    assert.throws(() => unsetAtPath(value, [key, 'toString']), /Unsafe configuration path/);
+    assert.equal(getAtPath(value, [key]), undefined);
+  }
+});
+
+test('deepMerge rejects prototype keys even inside newly added objects', () => {
+  for (const key of ['__proto__', 'constructor', 'prototype']) {
+    const override = JSON.parse(`{"nested":{"${key}":{"polluted":true}}}`);
+    assert.throws(() => deepMerge({}, override), /Unsafe configuration path/);
+  }
+  assert.equal(Object.prototype.polluted, undefined);
+});
+
+test('path helpers do not read or mutate inherited objects', () => {
+  const inherited = { enabled: true };
+  const value = Object.create({ monitoring: inherited });
+  assert.equal(getAtPath(value, ['monitoring']), undefined);
+  unsetAtPath(value, ['monitoring', 'enabled']);
+  assert.equal(inherited.enabled, true);
+  setAtPath(value, ['monitoring', 'enabled'], false);
+  assert.equal(inherited.enabled, true);
+  assert.deepEqual(value.monitoring, { enabled: false });
+});
+
 test('parseUserValue handles booleans, numbers, JSON, and strings', () => {
   assert.equal(parseUserValue(' true '), true);
   assert.equal(parseUserValue('42.5'), 42.5);
